@@ -5,18 +5,26 @@ import io
 import os
 import time
 
-# Pineconeクライアントをインポート
-from components.pinecone_client import PineconeClient
+# Pineconeクライアントをインポート - try-exceptで囲む
+try:
+    from components.pinecone_client import PineconeClient
+    PINECONE_IMPORT_SUCCESS = True
+except ImportError as e:
+    print(f"Pineconeクライアントのインポートエラー: {e}")
+    PINECONE_IMPORT_SUCCESS = False
 
 class ChatHistory:
     def __init__(self):
         # Pineconeクライアントの初期化
-        try:
-            self.pinecone_client = PineconeClient()
-            self.pinecone_available = True
-        except Exception as e:
-            print(f"Pineconeの初期化エラー: {e}")
-            self.pinecone_available = False
+        self.pinecone_available = False
+        if PINECONE_IMPORT_SUCCESS:
+            try:
+                self.pinecone_client = PineconeClient()
+                self.pinecone_available = True
+                print("Pineconeクライアントを初期化しました")
+            except Exception as e:
+                print(f"Pineconeの初期化エラー: {e}")
+                self.pinecone_available = False
         
         # セッション状態に会話履歴が存在しない場合は初期化
         if 'chat_history' not in st.session_state:
@@ -29,11 +37,13 @@ class ChatHistory:
                         print("Pineconeから会話履歴を復元しました")
                     else:
                         st.session_state.chat_history = []
+                        print("Pineconeに復元可能な会話履歴がありませんでした")
                 except Exception as e:
                     print(f"会話履歴のロードエラー: {e}")
                     st.session_state.chat_history = []
             else:
                 st.session_state.chat_history = []
+                print("Pineconeが利用できないため、ローカルのみで会話履歴を管理します")
         
         if 'current_context' not in st.session_state:
             st.session_state.current_context = []
@@ -81,6 +91,7 @@ class ChatHistory:
             try:
                 self.pinecone_client.save_chat_history([])
                 st.session_state.last_save_time = time.time()
+                print("Pineconeの会話履歴をクリアしました")
             except Exception as e:
                 print(f"会話履歴のクリア中にエラー: {e}")
     
@@ -117,9 +128,10 @@ class ChatHistory:
         if (self.pinecone_available and 
             (current_time - st.session_state.last_save_time > 30)):
             try:
-                self.pinecone_client.save_chat_history(st.session_state.chat_history)
-                st.session_state.last_save_time = current_time
-                print("会話履歴をPineconeに保存しました")
+                result = self.pinecone_client.save_chat_history(st.session_state.chat_history)
+                if result:
+                    st.session_state.last_save_time = current_time
+                    print("会話履歴をPineconeに保存しました")
             except Exception as e:
                 print(f"会話履歴の保存中にエラー: {e}")
     
@@ -127,9 +139,12 @@ class ChatHistory:
         """会話履歴を強制的にPineconeに保存"""
         if self.pinecone_available:
             try:
-                self.pinecone_client.save_chat_history(st.session_state.chat_history)
-                st.session_state.last_save_time = time.time()
-                return True
+                result = self.pinecone_client.save_chat_history(st.session_state.chat_history)
+                if result:
+                    st.session_state.last_save_time = time.time()
+                    print("会話履歴を強制的にPineconeに保存しました")
+                    return True
+                return False
             except Exception as e:
                 print(f"会話履歴の強制保存中にエラー: {e}")
                 return False

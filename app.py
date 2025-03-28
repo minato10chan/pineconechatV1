@@ -589,11 +589,21 @@ def main():
         manage_prompts()
     
     # ページが変更されるたびにPineconeに会話履歴を保存
-    chat_history.force_save()
+    try:
+        chat_history.force_save()
+    except Exception as e:
+        print(f"会話履歴の保存エラー: {e}")
     
     # アプリケーション終了時に会話履歴を保存するための関数を登録
+    def save_on_exit():
+        try:
+            chat_history.force_save()
+            print("アプリケーション終了時に会話履歴を保存しました")
+        except Exception as e:
+            print(f"終了時の会話履歴保存エラー: {e}")
+    
     import atexit
-    atexit.register(lambda: chat_history.force_save())
+    atexit.register(save_on_exit)
 
 if __name__ == "__main__":
     main()
