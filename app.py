@@ -70,9 +70,29 @@ def initialize_vector_store():
         
     try:
         print("VectorStoreの初期化を開始します...")
-        from src.vector_store import VectorStore
-        vector_store = VectorStore()
-        vector_store_available = True
+        
+        # まずPineconeベースのベクトルストアの初期化を試みる
+        try:
+            from src.pinecone_vector_store import PineconeVectorStore
+            vector_store = PineconeVectorStore()
+            vector_store_available = True
+            print("PineconeベースのVectorStoreを初期化しました")
+        except Exception as e:
+            print(f"PineconeVectorStoreの初期化中にエラー: {e}")
+            print("ChromaDBベースのVectorStoreを試します...")
+            
+            # PineconeVectorStoreが失敗した場合、ChromaDBを試みる（ローカル環境用）
+            try:
+                from src.vector_store import VectorStore
+                vector_store = VectorStore()
+                vector_store_available = True
+                print("ChromaDBベースのVectorStoreを初期化しました")
+            except Exception as e:
+                print(f"ChromaDBVectorStoreの初期化中にエラー: {e}")
+                vector_store_available = False
+                vector_store = None
+                raise
+        
         # セッション状態に保存
         st.session_state.vector_store = vector_store
         print("VectorStore successfully initialized")
@@ -89,11 +109,11 @@ if 'vector_store_initialized' not in st.session_state:
 
 def register_document(uploaded_file, additional_metadata=None):
     """
-    アップロードされたファイルをChromaDBに登録する関数。
+    アップロードされたファイルをベクトルデータベースに登録する関数。
     additional_metadata: 追加のメタデータ辞書
     """
     if not vector_store_available:
-        st.error("データベース接続でエラーが発生しました。ChromaDBが使用できません。")
+        st.error("データベース接続でエラーが発生しました。ベクトルデータベースが使用できません。")
         return
     
     if uploaded_file is not None:
@@ -158,24 +178,34 @@ def register_document(uploaded_file, additional_metadata=None):
             global vector_store
             
             # ドキュメントの追加（UPSERT）
-            vector_store.upsert_documents(documents=documents, ids=original_ids)
-
-            st.success(f"{uploaded_file.name} をデータベースに登録しました。")
-            st.info(f"{len(documents)}件のチャンクに分割されました")
+            result = vector_store.upsert_documents(documents=documents, ids=original_ids)
+            
+            if result:
+                st.success(f"{uploaded_file.name} をデータベースに登録しました。")
+                st.info(f"{len(documents)}件のチャンクに分割されました")
+            else:
+                st.warning(f"{uploaded_file.name} の登録に問題がありました。詳細はログを確認してください。")
+            
         except Exception as e:
             st.error(f"ドキュメントの登録中にエラーが発生しました: {e}")
             st.error("エラーの詳細:")
             st.exception(e)
 
-def manage_chromadb():
+def manage_db():
     """
-    ChromaDBを管理するページの関数。
+    ベクトルデータベースを管理するページの関数。
     """
-    st.header("ChromaDB 管理")
+    st.header("ベクトルデータベース管理")
 
     if not vector_store_available:
-        st.error("ChromaDBの接続でエラーが発生しました。現在、ベクトルデータベースは使用できません。")
-        st.warning("これはSQLiteのバージョンの非互換性によるものです。Streamlit Cloudでの実行には制限があります。")
+        st.error("ベクトルデータベースの接続でエラーが発生しました。現在、ベクトルデータベースは使用できません。")
+        st.warning("これはSQLiteのバージョンの非互換性によるものかもしれません。Streamlit CloudではChromaDBに制限があります。")
+        
+        # デバッグ情報
+        st.sidebar.expander("デバッグ情報", expanded=False).write("""
+        Streamlit CloudではSQLiteのバージョン制限によりChromaDBが利用できない場合があります。
+        代わりにPineconeを使用するため、Pinecone APIキーを設定してください。
+        """)
         return
 
     # グローバルのvector_storeを使用
@@ -231,7 +261,7 @@ def manage_chromadb():
     st.markdown("---")
 
     # 2.登録状況確認
-    st.subheader("ChromaDB 登録状況確認")
+    st.subheader("ベクトルデータベース 登録状況確認")
     
     # 検索フィルター
     with st.expander("検索フィルター", expanded=False):
@@ -242,422 +272,286 @@ def manage_chromadb():
     if st.button("登録済みドキュメントを表示"):
         with st.spinner('取得中...'):
             try:
-                # グローバルのVectorStoreインスタンスを使用
-                dict_data = vector_store.get_documents(ids=None)
+                # ドキュメント数を取得
+                count = vector_store.count()
+                st.info(f"データベースには{count}件のドキュメントが登録されています")
                 
-                if dict_data and len(dict_data.get('ids', [])) > 0:
-                    # フィルタリング
-                    filtered_indices = range(len(dict_data['ids']))
-                    
-                    if filter_municipality or filter_category:
-                        filtered_indices = []
-                        for i, metadata in enumerate(dict_data['metadatas']):
-                            municipality_match = True
-                            category_match = True
-                            
-                            if filter_municipality and metadata.get('municipality'):
-                                municipality_match = filter_municipality.lower() in metadata['municipality'].lower()
-                            
-                            if filter_category:
-                                major_match = metadata.get('major_category') and filter_category.lower() in metadata['major_category'].lower()
-                                medium_match = metadata.get('medium_category') and filter_category.lower() in metadata['medium_category'].lower()
-                                category_match = major_match or medium_match
-                                
-                            if municipality_match and category_match:
-                                filtered_indices.append(i)
-                    
-                    # フィルタリングされたデータでDataFrameを作成
-                    filtered_ids = [dict_data['ids'][i] for i in filtered_indices]
-                    filtered_docs = [dict_data['documents'][i] for i in filtered_indices]
-                    filtered_metas = [dict_data['metadatas'][i] for i in filtered_indices]
-                    
-                    tmp_df = pd.DataFrame({
-                        "IDs": filtered_ids,
-                        "Documents": filtered_docs,
-                        "市区町村": [m.get('municipality', '') for m in filtered_metas],
-                        "大カテゴリ": [m.get('major_category', '') for m in filtered_metas],
-                        "中カテゴリ": [m.get('medium_category', '') for m in filtered_metas],
-                        "ソース元": [m.get('source', '') for m in filtered_metas],
-                        "登録日時": [m.get('registration_date', '') for m in filtered_metas],
-                        "データ公開日": [m.get('publication_date', '') for m in filtered_metas],
-                        "緯度経度": [f"{m.get('latitude', '')}, {m.get('longitude', '')}" for m in filtered_metas]
-                    })
-                    
-                    st.dataframe(tmp_df)
-                    st.success(f"合計 {len(filtered_ids)} 件のドキュメントが表示されています（全 {len(dict_data['ids'])} 件中）")
-                else:
-                    st.info("データベースに登録されたデータはありません。")
+                # 注意: Pineconeは全件取得に対応していないため、検索結果のみ表示
+                st.warning("Pineconeでは全件表示ができません。検索フォームを使ってドキュメントを検索してください。")
+                
             except Exception as e:
-                st.error(f"データの取得中にエラーが発生しました: {e}")
-                st.error("エラーの詳細:")
+                st.error(f"ドキュメント取得中にエラーが発生しました: {e}")
                 st.exception(e)
-
-    st.markdown("---")
-
-    # 3.全データ削除
-    st.subheader("ChromaDB 登録データ全削除")
-    if st.button("全データを削除する"):
-        with st.spinner('削除中...'):
-            try:
-                # グローバルのVectorStoreインスタンスを使用
-                current_ids = vector_store.get_documents(ids=None).get('ids', [])
-                if current_ids:
-                    vector_store.delete_documents(ids=current_ids)
-                    st.success(f"データベースから {len(current_ids)} 件のドキュメントが削除されました")
-                else:
-                    st.info("削除するデータがありません。")
-            except Exception as e:
-                st.error(f"データの削除中にエラーが発生しました: {e}")
-                st.error("エラーの詳細:")
-                st.exception(e)
-
-def manage_prompts():
-    """
-    プロンプトを管理するページの関数。
-    """
-    st.header("プロンプト管理")
-
-    # プロンプトの追加
-    st.subheader("新しいプロンプトの追加")
-    new_prompt_name = st.text_input("プロンプト名", "")
-    new_prompt_content = st.text_area("プロンプト内容", height=300)
     
-    if st.button("プロンプトを追加") and new_prompt_name and new_prompt_content:
-        if len(st.session_state.custom_prompts) >= 3:
-            st.error("プロンプトは最大3つまで登録できます。")
-        else:
-            st.session_state.custom_prompts.append({
-                'name': new_prompt_name,
-                'content': new_prompt_content
-            })
-            st.success(f"プロンプト '{new_prompt_name}' を追加しました。")
-
-    # プロンプトの一覧表示と編集
-    st.subheader("登録済みプロンプト")
-    for i, prompt in enumerate(st.session_state.custom_prompts):
-        with st.expander(f"プロンプト: {prompt['name']}", expanded=False):
-            edited_name = st.text_input("プロンプト名", prompt['name'], key=f"name_{i}")
-            edited_content = st.text_area("プロンプト内容", prompt['content'], height=300, key=f"content_{i}")
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("更新", key=f"update_{i}"):
-                    st.session_state.custom_prompts[i]['name'] = edited_name
-                    st.session_state.custom_prompts[i]['content'] = edited_content
-                    st.success(f"プロンプト '{edited_name}' を更新しました。")
-            with col2:
-                if st.button("削除", key=f"delete_{i}") and len(st.session_state.custom_prompts) > 1:
-                    st.session_state.custom_prompts.pop(i)
-                    if st.session_state.selected_prompt == prompt['name']:
-                        st.session_state.selected_prompt = st.session_state.custom_prompts[0]['name']
-                    st.success(f"プロンプト '{prompt['name']}' を削除しました。")
-
-    # プロンプトの選択
-    st.subheader("使用するプロンプトの選択")
-    prompt_names = [p['name'] for p in st.session_state.custom_prompts]
-    selected_prompt = st.selectbox(
-        "プロンプトを選択してください",
-        prompt_names,
-        index=prompt_names.index(st.session_state.selected_prompt)
-    )
-    st.session_state.selected_prompt = selected_prompt
-
-# RAGを使ったLLM回答生成
-def generate_response(query_text, filter_conditions=None):
-    """
-    質問に対する回答を生成する関数。
-    filter_conditions: メタデータによるフィルタリング条件
-    """
-    if not vector_store_available:
-        return "申し訳ありません。現在、ベクトルデータベースに接続できないため、質問に回答できません。"
-    
-    if query_text:
-        try:
-            # グローバルのVectorStoreインスタンスを使用
-            global vector_store
-
-            # 選択されたプロンプトを取得
-            selected_prompt = next(p for p in st.session_state.custom_prompts if p['name'] == st.session_state.selected_prompt)
-            prompt = ChatPromptTemplate.from_template(selected_prompt['content'])
-
-            def format_docs(docs):
-                return "\n\n".join(doc.page_content for doc in docs)
-
-            # 検索結果を取得（フィルタリング条件があれば適用）
-            search_results = vector_store.search(query_text, n_results=5, filter_conditions=filter_conditions)
-            
-            # 検索結果がない場合
-            if not search_results or not search_results.get('documents', [[]])[0]:
-                return "申し訳ありません。指定された条件に一致するドキュメントが見つかりませんでした。検索条件を変更してお試しください。"
-            
-            # 検索結果をドキュメント形式に変換
-            from langchain_core.documents import Document
-            docs = []
-            for i, doc_text in enumerate(search_results['documents'][0]):
-                # メタデータの取得（利用可能な場合）
-                metadata = {}
-                if search_results.get('metadatas') and len(search_results['metadatas']) > 0:
-                    metadata = search_results['metadatas'][0][i] if i < len(search_results['metadatas'][0]) else {}
-                
-                # ドキュメントの作成
-                doc = Document(
-                    page_content=doc_text,
-                    metadata=metadata
-                )
-                docs.append(doc)
-
-            # 使用するメタデータの情報を表示
-            st.markdown("#### 検索結果")
-            meta_info = []
-            for i, doc in enumerate(docs):
-                meta_str = ""
-                if doc.metadata.get('municipality'):
-                    meta_str += f"【市区町村】{doc.metadata['municipality']} "
-                if doc.metadata.get('major_category'):
-                    meta_str += f"【大カテゴリ】{doc.metadata['major_category']} "
-                if doc.metadata.get('medium_category'):
-                    meta_str += f"【中カテゴリ】{doc.metadata['medium_category']} "
-                if doc.metadata.get('source'):
-                    meta_str += f"【ソース元】{doc.metadata['source']}"
-                
-                meta_info.append(f"{i+1}. {meta_str}")
-            
-            st.markdown("\n".join(meta_info))
-
-            # 使用するプロンプトを表示
-            st.markdown("#### 使用するプロンプト")
-            st.markdown(f"**プロンプト名**: {selected_prompt['name']}")
-            with st.expander("プロンプト内容を表示"):
-                st.text(selected_prompt['content'])
-
-            # 会話履歴を取得
-            chat_history_text = chat_history.get_formatted_history()
-
-            qa_chain = (
-                {
-                    "context": lambda x: format_docs(docs),
-                    "chat_history": lambda x: chat_history_text,
-                    "question": RunnablePassthrough(),
-                }
-                | prompt
-                | llm
-                | StrOutputParser()
-            )
-            return qa_chain.invoke(query_text)
-        except Exception as e:
-            st.error(f"質問の処理中にエラーが発生しました: {e}")
-            st.error("エラーの詳細:")
-            st.exception(e)
-            return None
-
-def ask_question():
-    """
-    質問するページの関数。
-    """
-    st.header("ドキュメントに質問する")
-
-    if not vector_store_available:
-        st.error("ChromaDBの接続でエラーが発生しました。現在、ベクトルデータベースは使用できません。")
-        st.warning("これはSQLiteのバージョンの非互換性によるものです。Streamlit Cloudでの実行には制限があります。")
-        st.info("ローカル環境での実行をお試しください。")
-        return
-
-    # フィルタリング条件の設定
-    with st.expander("検索範囲の絞り込み", expanded=False):
+    # 3.データベース操作（メンテナンス機能）
+    with st.expander("データベースメンテナンス", expanded=False):
+        st.warning("⚠️ 以下の操作は慎重に行ってください")
+        
         col1, col2 = st.columns(2)
         
         with col1:
-            filter_municipality = st.text_input("市区町村名", "")
-            filter_major_category = st.selectbox(
-                "大カテゴリ",
-                [""] + MAJOR_CATEGORIES
-            )
-        
-        with col2:
-            filter_medium_category = st.selectbox(
-                "中カテゴリ",
-                [""] + (MEDIUM_CATEGORIES.get(filter_major_category, []) if filter_major_category else [])
-            )
-            filter_source = st.text_input("ソース元", "")
+            # 特定IDのドキュメント削除
+            delete_id = st.text_input("削除するドキュメントID", "")
+            if st.button("ドキュメントを削除") and delete_id:
+                with st.spinner('削除中...'):
+                    try:
+                        result = vector_store.delete_documents([delete_id])
+                        if result:
+                            st.success(f"ドキュメント {delete_id} を削除しました")
+                        else:
+                            st.error(f"ドキュメント {delete_id} の削除に失敗しました")
+                    except Exception as e:
+                        st.error(f"削除中にエラーが発生しました: {e}")
+                        st.exception(e)
 
+# ページ関数の定義 - チャットインターフェースの実装
+def chat_interface():
+    # タイトル表示
+    st.header("ドキュメントに質問する")
+    
+    # リセットボタン
+    if st.sidebar.button("会話をリセット"):
+        chat_history.clear_history()
+        st.sidebar.success("会話履歴をリセットしました")
+        st.rerun()
+    
+    # プロンプトの選択
+    selected_prompt = st.sidebar.selectbox(
+        "プロンプトを選択",
+        options=[p['name'] for p in st.session_state.custom_prompts],
+        index=0
+    )
+    st.session_state.selected_prompt = selected_prompt
+    
+    # 選択されたプロンプトのテンプレートを取得
+    prompt_template = next(
+        (p['content'] for p in st.session_state.custom_prompts if p['name'] == selected_prompt),
+        RAG_PROMPT_TEMPLATE
+    )
+    
     # 会話履歴の表示
-    st.markdown("### 会話履歴")
-    
-    # 会話履歴の表示と操作ボタンを分けて配置
     for message in chat_history.get_history():
-        role = "ユーザー" if message['role'] == 'user' else "アシスタント"
-        st.markdown(f"**{role}**: {message['content']}")
+        role = message["role"]
+        content = message["content"]
+        with st.chat_message(role):
+            st.markdown(content)
     
-    # 履歴操作ボタンを横に配置
+    if not vector_store_available:
+        st.error("ベクトルデータベースが利用できないため、質問応答機能は制限されます。")
+        st.info("Pineconeを設定するか、ローカル環境で実行してください。")
+    
+    # 質問入力
+    if question := st.chat_input("質問を入力してください"):
+        # ユーザーの質問をチャット履歴に追加
+        with st.chat_message("user"):
+            st.markdown(question)
+        chat_history.add_message("user", question)
+        
+        # 回答を生成
+        with st.chat_message("assistant"):
+            with st.spinner("回答を考え中..."):
+                try:
+                    # 質問をベクトル化して関連ドキュメントを検索
+                    if vector_store_available:
+                        filter_conditions = {}  # 必要に応じてフィルター条件を追加
+                        search_results = vector_store.search(question, n_results=5, filter_conditions=filter_conditions)
+                        contexts = []
+                        
+                        if search_results and len(search_results["documents"][0]) > 0:
+                            for i, (doc, metadata) in enumerate(zip(search_results["documents"][0], search_results["metadatas"][0])):
+                                context = f"出典: {metadata.get('source', 'unknown')}\n内容: {doc}"
+                                contexts.append(context)
+                        
+                        # コンテキストが見つからない場合
+                        if not contexts:
+                            answer = "申し訳ありませんが、その質問に答えるための関連情報が見つかりませんでした。別の質問をしてみるか、より多くの文書を登録してください。"
+                            st.markdown(answer)
+                            chat_history.add_message("assistant", answer)
+                            return
+                    else:
+                        # ベクトルストアが利用できない場合は一般的な回答
+                        contexts = ["ベクトルデータベースが使用できないため、登録済みドキュメントにアクセスできません。一般的な応答のみを提供します。"]
+                    
+                    # コンテキストを使ってLLMで回答を生成
+                    prompt = ChatPromptTemplate.from_template(prompt_template)
+                    
+                    chain = (
+                        {"context": lambda _: "\n\n".join(contexts), "question": lambda x: x}
+                        | prompt
+                        | llm
+                        | StrOutputParser()
+                    )
+                    
+                    answer = chain.invoke(question)
+                    st.markdown(answer)
+                    
+                    # 回答を履歴に追加
+                    chat_history.add_message("assistant", answer)
+                    
+                except Exception as e:
+                    error_message = f"回答の生成中にエラーが発生しました: {e}"
+                    st.error(error_message)
+                    chat_history.add_message("assistant", error_message)
+
+# ページ関数の定義 - プロンプト管理
+def prompt_management():
+    st.header("プロンプト管理")
+    
+    # 現在のプロンプト一覧を表示
+    st.subheader("登録済みプロンプト")
+    
+    # プロンプト選択用のセレクトボックス
+    prompt_names = [p['name'] for p in st.session_state.custom_prompts]
+    selected_index = prompt_names.index(st.session_state.selected_prompt) if st.session_state.selected_prompt in prompt_names else 0
+    
+    selected_prompt_name = st.selectbox(
+        "編集するプロンプトを選択",
+        options=prompt_names,
+        index=selected_index
+    )
+    
+    # 選択されたプロンプトの内容を取得
+    selected_prompt = next((p for p in st.session_state.custom_prompts if p['name'] == selected_prompt_name), None)
+    
+    if selected_prompt:
+        # プロンプト編集フォーム
+        with st.form(key="edit_prompt_form"):
+            prompt_name = st.text_input("プロンプト名", value=selected_prompt['name'])
+            prompt_content = st.text_area("プロンプト内容", value=selected_prompt['content'], height=300)
+            
+            col1, col2 = st.columns(2)
+            submit_button = col1.form_submit_button("更新")
+            delete_button = col2.form_submit_button("削除", type="secondary")
+            
+            if submit_button and prompt_name and prompt_content:
+                # 同じ名前のプロンプトを更新
+                for i, p in enumerate(st.session_state.custom_prompts):
+                    if p['name'] == selected_prompt_name:
+                        st.session_state.custom_prompts[i] = {
+                            'name': prompt_name,
+                            'content': prompt_content
+                        }
+                        break
+                
+                # 選択されているプロンプト名も更新
+                if st.session_state.selected_prompt == selected_prompt_name:
+                    st.session_state.selected_prompt = prompt_name
+                
+                st.success(f"プロンプト '{prompt_name}' を更新しました")
+                st.rerun()
+            
+            if delete_button and len(st.session_state.custom_prompts) > 1:
+                # プロンプトを削除（デフォルトは削除不可）
+                if selected_prompt_name == "デフォルト":
+                    st.error("デフォルトプロンプトは削除できません")
+                else:
+                    st.session_state.custom_prompts = [p for p in st.session_state.custom_prompts if p['name'] != selected_prompt_name]
+                    
+                    # 選択されているプロンプトが削除された場合はデフォルトに戻す
+                    if st.session_state.selected_prompt == selected_prompt_name:
+                        st.session_state.selected_prompt = "デフォルト"
+                    
+                    st.success(f"プロンプト '{selected_prompt_name}' を削除しました")
+                    st.rerun()
+    
+    # 新規プロンプト追加
+    st.subheader("新規プロンプト追加")
+    
+    with st.form(key="add_prompt_form"):
+        new_prompt_name = st.text_input("新規プロンプト名")
+        new_prompt_content = st.text_area("新規プロンプト内容", value=RAG_PROMPT_TEMPLATE, height=300)
+        
+        submit_button = st.form_submit_button("追加")
+        
+        if submit_button and new_prompt_name and new_prompt_content:
+            # 同名のプロンプトがないか確認
+            if any(p['name'] == new_prompt_name for p in st.session_state.custom_prompts):
+                st.error(f"プロンプト名 '{new_prompt_name}' は既に使用されています。別の名前を選択してください。")
+            else:
+                # 新規プロンプトを追加
+                st.session_state.custom_prompts.append({
+                    'name': new_prompt_name,
+                    'content': new_prompt_content
+                })
+                st.success(f"新規プロンプト '{new_prompt_name}' を追加しました")
+                st.rerun()
+
+# ダッシュボード表示
+def dashboard():
+    st.header("ダッシュボード")
+    
+    # システム情報
+    st.subheader("システム情報")
+    
     col1, col2 = st.columns(2)
     
     with col1:
-        # 会話履歴をクリアするボタン
-        if st.button('会話履歴をクリア'):
-            chat_history.clear_history()
-            st.success("会話履歴をクリアしました。")
-            st.rerun()
-    
-    with col2:
-        # 会話履歴をCSVでダウンロードするボタン
-        if chat_history.get_history():
-            csv_data = chat_history.get_csv_export()
-            if csv_data:
-                current_time = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                st.download_button(
-                    label="CSVでダウンロード",
-                    data=csv_data,
-                    file_name=f"会話履歴_{current_time}.csv",
-                    mime="text/csv",
-                )
-
-    # Query text
-    query_text = st.text_input('質問を入力:', 
-                               placeholder='簡単な概要を記入してください')
-
-    # 質問送信ボタン
-    if st.button('Submit') and query_text:
-        with st.spinner('回答を生成中...'):
-            # フィルタリング条件の作成
-            filter_conditions = {}
-            if filter_municipality:
-                filter_conditions["municipality"] = filter_municipality
-            if filter_major_category:
-                filter_conditions["major_category"] = filter_major_category
-            if filter_medium_category:
-                filter_conditions["medium_category"] = filter_medium_category
-            if filter_source:
-                filter_conditions["source"] = filter_source
-                
-            # ユーザーの質問を会話履歴に追加
-            chat_history.add_message('user', query_text)
-            
-            response = generate_response(query_text, filter_conditions)
-            if response:
-                # アシスタントの回答を会話履歴に追加
-                chat_history.add_message('assistant', response)
-                st.success("回答:")
-                st.info(response)
-            else:
-                st.error("回答の生成に失敗しました。")
-
-def fallback_mode():
-    """
-    ChromaDBが使用できない場合のフォールバックモード
-    """
-    st.header("ChromaDBが使用できません")
-    st.error("SQLiteのバージョンの問題により、ChromaDBを使用できません。")
-    st.info("このアプリは、SQLite 3.35.0以上が必要です。Streamlit Cloudでは現在、SQLite 3.34.1が使用されています。")
-    
-    st.markdown("""
-    ## 解決策
-    
-    1. **ローカル環境での実行**: 
-       - このアプリをローカル環境でクローンして実行してください
-       - 最新のSQLiteがインストールされていることを確認してください
-    
-    2. **代替のベクトルデータベース**:
-       - ChromaDBの代わりに、他のベクトルデータベース（FAISS、Milvusなど）を使用することも検討できます
-    
-    3. **インメモリモードでの使用**:
-       - 現在、DuckDB+Parquetバックエンドでの実行を試みていますが、これも失敗しています
-       - 詳細については、ログを確認してください
-    """)
-    
-    # 技術的な詳細
-    with st.expander("技術的な詳細"):
-        st.code("""
-# エラーの原因
-ChromaDBは内部でSQLite 3.35.0以上を必要としていますが、
-Streamlit Cloudでは現在、SQLite 3.34.1が使用されています。
-
-# 試みた解決策
-1. pysqlite3-binaryのインストール
-2. SQLiteのソースからのビルド
-3. DuckDB+Parquetバックエンドの使用
-4. モンキーパッチの適用
-
-いずれも環境制限により成功していません。
-        """)
-
-def main():
-    """
-    アプリケーションのメイン関数。
-    """
-    # タイトルを表示
-    st.title('🦜🔗 Ask the Doc App')
-
-    # サイドバーにデバッグ情報表示ボタンを追加
-    with st.sidebar:
-        st.title("メニュー")
+        st.metric("会話数", len(chat_history.get_history()) // 2)
         
-        # 開発者向けデバッグ情報
-        with st.expander("デバッグ情報", expanded=False):
-            if st.button("環境変数をチェック"):
-                # 環境変数の確認（APIキーは安全のためマスク）
-                env_vars = {
-                    "OPENAI_API_KEY": "設定済み" if os.environ.get("OPENAI_API_KEY") else "未設定",
-                    "PINECONE_API_KEY": "設定済み" if os.environ.get("PINECONE_API_KEY") else "未設定",
-                    "PINECONE_ENVIRONMENT": os.environ.get("PINECONE_ENVIRONMENT", "未設定"),
-                    "PINECONE_INDEX": os.environ.get("PINECONE_INDEX", "未設定"),
-                    "STREAMLIT_SESSION_ID": os.environ.get("STREAMLIT_SESSION_ID", "自動生成")
-                }
-                st.json(env_vars)
-                
-                # Pineconeの接続状態
-                st.write("#### Pineconeの状態")
-                pinecone_status = {
-                    "利用可能": chat_history.pinecone_available,
-                    "初期化済み": st.session_state.get("pinecone_initialized", False)
-                }
-                st.json(pinecone_status)
-                
-                # VectorStoreの状態
-                st.write("#### VectorStoreの状態")
-                vs_status = {
-                    "利用可能": vector_store_available,
-                    "初期化済み": st.session_state.get("vector_store_initialized", False)
-                }
-                st.json(vs_status)
-                
-            if st.button("セッション状態表示"):
-                # セッション状態の表示（センシティブな情報は除外）
-                safe_session = {k: v for k, v in st.session_state.items() 
-                              if k not in ['pinecone_client', 'vector_store']}
-                st.json(safe_session)
-
-    # ChromaDBが使用できない場合はフォールバックモード
-    if not vector_store_available:
-        fallback_mode()
-        return
-
-    # ページ選択
-    page = st.sidebar.radio("ページを選択してください", ["ChromaDB 管理", "質問する", "プロンプト管理"])
-
-    # 各ページへ移動
-    if page == "質問する":
-        ask_question()
-    elif page == "ChromaDB 管理":
-        manage_chromadb()
-    elif page == "プロンプト管理":
-        manage_prompts()
+    with col2:
+        if vector_store_available:
+            doc_count = vector_store.count()
+            st.metric("登録ドキュメント数", doc_count)
+        else:
+            st.metric("登録ドキュメント数", "N/A")
+            st.info("ベクトルデータベースが接続されていません")
     
-    # ページが変更されるたびにPineconeに会話履歴を保存
-    try:
-        chat_history.force_save()
-    except Exception as e:
-        print(f"会話履歴の保存エラー: {e}")
+    # 会話ログのエクスポート
+    st.subheader("会話ログのエクスポート")
     
-    # アプリケーション終了時に会話履歴を保存するための関数を登録
-    def save_on_exit():
-        try:
-            chat_history.force_save()
-            print("アプリケーション終了時に会話履歴を保存しました")
-        except Exception as e:
-            print(f"終了時の会話履歴保存エラー: {e}")
+    if st.button("会話ログをCSVでダウンロード"):
+        csv_data = chat_history.get_csv_export()
+        if csv_data:
+            # CSVデータをダウンロード可能にする
+            filename = f"chat_log_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+            st.download_button(
+                label="ダウンロード",
+                data=csv_data,
+                file_name=filename,
+                mime="text/csv",
+            )
+        else:
+            st.info("エクスポートする会話履歴がありません")
     
-    import atexit
-    atexit.register(save_on_exit)
+    # 環境変数の確認
+    with st.expander("環境変数", expanded=False):
+        if "OPENAI_API_KEY" in os.environ:
+            st.success("OPENAI_API_KEY: 設定済み")
+        else:
+            st.error("OPENAI_API_KEY: 未設定")
+            
+        if "PINECONE_API_KEY" in os.environ:
+            st.success("PINECONE_API_KEY: 設定済み")
+        else:
+            st.error("PINECONE_API_KEY: 未設定")
+            
+        if "PINECONE_ENVIRONMENT" in os.environ:
+            st.success(f"PINECONE_ENVIRONMENT: {os.environ.get('PINECONE_ENVIRONMENT')}")
+        else:
+            st.warning("PINECONE_ENVIRONMENT: 未設定 (デフォルト値使用)")
 
-if __name__ == "__main__":
-    main()
+# サイドバーメニュー
+st.sidebar.title("メニュー")
+page = st.sidebar.radio(
+    "ページを選択",
+    ["ドキュメントに質問する", "ベクトルDB管理", "プロンプト管理", "ダッシュボード"]
+)
+
+# セッション終了時に会話履歴を保存
+try:
+    if chat_history.pinecone_available:
+        saved = chat_history.force_save()
+        if saved:
+            print("会話履歴を保存しました")
+except Exception as e:
+    print(f"会話履歴の保存中にエラー: {e}")
+
+# ページに応じた表示
+if page == "ドキュメントに質問する":
+    chat_interface()
+elif page == "ベクトルDB管理":
+    manage_db()
+elif page == "プロンプト管理":
+    prompt_management()
+elif page == "ダッシュボード":
+    dashboard()

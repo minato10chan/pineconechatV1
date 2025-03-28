@@ -89,6 +89,74 @@ class PineconeClient:
         except Exception as e:
             print(f"Pinecone終了処理中のエラー: {e}")
     
+    def _make_request(self, method, url, json_data=None, params=None, max_retries=3):
+        """REST APIリクエストを実行する共通メソッド"""
+        retries = 0
+        while retries < max_retries:
+            try:
+                if method.upper() == "GET":
+                    response = requests.get(
+                        url, 
+                        headers=self.headers,
+                        params=params,
+                        timeout=30
+                    )
+                elif method.upper() == "POST":
+                    response = requests.post(
+                        url, 
+                        headers=self.headers,
+                        json=json_data,
+                        params=params,
+                        timeout=30
+                    )
+                elif method.upper() == "DELETE":
+                    response = requests.delete(
+                        url, 
+                        headers=self.headers,
+                        json=json_data,
+                        params=params,
+                        timeout=30
+                    )
+                else:
+                    print(f"サポートされていないHTTPメソッド: {method}")
+                    return None
+                
+                # レートリミットエラーの場合は再試行
+                if response.status_code == 429:
+                    retries += 1
+                    wait_time = 2 ** retries  # 指数バックオフ
+                    print(f"レートリミットに達しました。{wait_time}秒後に再試行します...")
+                    time.sleep(wait_time)
+                    continue
+                
+                # エラーはログに記録して応答を返す
+                if response.status_code >= 400:
+                    print(f"API呼び出しエラー: {method} {url} - ステータス: {response.status_code}")
+                    try:
+                        print(f"レスポンス: {response.json()}")
+                    except:
+                        print(f"レスポンス: {response.text}")
+                
+                return response
+                
+            except requests.exceptions.ConnectionError as e:
+                print(f"接続エラー: {e}")
+                retries += 1
+                if retries < max_retries:
+                    wait_time = 2 ** retries
+                    print(f"{wait_time}秒後に再試行します...")
+                    time.sleep(wait_time)
+                else:
+                    print("最大再試行回数に達しました")
+                    return None
+                    
+            except Exception as e:
+                print(f"APIリクエスト中のエラー: {e}")
+                print(traceback.format_exc())
+                return None
+        
+        return None
+    
     def _test_api_connection_rest(self):
         """REST APIを使用してPineconeに接続テスト"""
         try:
@@ -96,9 +164,9 @@ class PineconeClient:
             api_url = "https://api.pinecone.io/indexes"
             
             print(f"Pinecone REST APIで接続テスト中... URL: {api_url}")
-            response = requests.get(api_url, headers=self.headers, timeout=10)
+            response = self._make_request(method="GET", url=api_url)
             
-            if response.status_code == 200:
+            if response and response.status_code == 200:
                 print(f"Pinecone REST API接続成功: {response.status_code}")
                 try:
                     index_list = response.json()
@@ -108,7 +176,7 @@ class PineconeClient:
                     print(f"レスポンス内容: {response.text}")
                 return True
             else:
-                print(f"Pinecone REST API接続エラー: {response.status_code} - {response.text}")
+                print(f"Pinecone REST API接続エラー: {getattr(response, 'status_code', 'N/A')} - {getattr(response, 'text', 'No response')}")
                 return False
         except Exception as e:
             print(f"Pinecone REST API接続テスト中の例外: {e}")
@@ -122,39 +190,38 @@ class PineconeClient:
             api_url = f"https://api.pinecone.io/indexes/{self.index_name}"
             print(f"インデックス '{self.index_name}' の存在確認中... URL: {api_url}")
             
-            response = requests.get(api_url, headers=self.headers, timeout=10)
+            response = self._make_request(method="GET", url=api_url)
             
-            if response.status_code == 200:
+            if response and response.status_code == 200:
                 print(f"インデックス '{self.index_name}' が存在します")
                 return True
-            elif response.status_code == 404:
+            elif response and response.status_code == 404:
                 print(f"インデックス '{self.index_name}' が見つかりません。作成を試みます...")
                 
                 # インデックス作成リクエスト
                 create_url = "https://api.pinecone.io/indexes"
                 create_data = {
                     "name": self.index_name,
-                    "dimension": 1,
+                    "dimension": 1536,  # OpenAI embeddings default
                     "metric": "cosine"
                 }
                 
-                create_response = requests.post(
-                    create_url, 
-                    headers=self.headers, 
-                    json=create_data,
-                    timeout=30
+                create_response = self._make_request(
+                    method="POST",
+                    url=create_url,
+                    json_data=create_data
                 )
                 
-                if create_response.status_code in [200, 201, 202]:
+                if create_response and create_response.status_code in [200, 201, 202]:
                     print(f"インデックス '{self.index_name}' の作成リクエストが受け付けられました")
                     # インデックス作成は非同期なので、完了を待つ
                     time.sleep(5)
                     return True
                 else:
-                    print(f"インデックス作成エラー: {create_response.status_code} - {create_response.text}")
+                    print(f"インデックス作成エラー: {getattr(create_response, 'status_code', 'N/A')} - {getattr(create_response, 'text', 'No response')}")
                     return False
             else:
-                print(f"インデックス確認中のエラー: {response.status_code} - {response.text}")
+                print(f"インデックス確認中のエラー: {getattr(response, 'status_code', 'N/A')} - {getattr(response, 'text', 'No response')}")
                 return False
         except Exception as e:
             print(f"インデックス確認中の例外: {e}")
@@ -229,13 +296,17 @@ class PineconeClient:
                 "namespace": self.namespace
             }
             
-            response = requests.post(api_url, headers=self.headers, json=data, timeout=30)
+            response = self._make_request(
+                method="POST",
+                url=api_url,
+                json_data=data
+            )
             
-            if response.status_code in [200, 201, 202]:
+            if response and response.status_code in [200, 201, 202]:
                 print(f"会話履歴をPineconeに保存しました (REST): {vector_id}")
                 return vector_id
             else:
-                print(f"会話履歴の保存エラー: {response.status_code} - {response.text}")
+                print(f"会話履歴の保存エラー: {getattr(response, 'status_code', 'N/A')} - {getattr(response, 'text', 'No response')}")
                 return None
         except Exception as e:
             print(f"Pineconeへの保存エラー: {e}")
@@ -298,9 +369,13 @@ class PineconeClient:
                 "namespace": self.namespace
             }
             
-            response = requests.post(api_url, headers=self.headers, json=data, timeout=30)
+            response = self._make_request(
+                method="POST",
+                url=api_url,
+                json_data=data
+            )
             
-            if response.status_code == 200:
+            if response and response.status_code == 200:
                 result = response.json()
                 if result.get("matches") and len(result["matches"]) > 0:
                     # 最新の会話履歴を取得
@@ -313,7 +388,7 @@ class PineconeClient:
                 else:
                     print(f"セッションID '{session_id}' の会話履歴が見つかりませんでした (REST)")
             else:
-                print(f"会話履歴の検索エラー: {response.status_code} - {response.text}")
+                print(f"会話履歴の検索エラー: {getattr(response, 'status_code', 'N/A')} - {getattr(response, 'text', 'No response')}")
         except Exception as e:
             print(f"Pineconeからの読み込みエラー: {e}")
             print(traceback.format_exc())
