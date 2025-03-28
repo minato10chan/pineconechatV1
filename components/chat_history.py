@@ -31,11 +31,15 @@ class ChatHistory:
             try:
                 print("Pineconeクライアントの初期化を開始します...")
                 self.pinecone_client = PineconeClient()
-                self.pinecone_available = True
+                # クライアントの接続状態をチェック
+                self.pinecone_available = getattr(self.pinecone_client, 'available', False)
                 # セッション状態に保存
-                st.session_state.pinecone_client = self.pinecone_client
-                st.session_state.pinecone_available = True
-                print("Pineconeクライアントを初期化しました")
+                if self.pinecone_available:
+                    st.session_state.pinecone_client = self.pinecone_client
+                    st.session_state.pinecone_available = True
+                    print("Pineconeクライアントを初期化しました")
+                else:
+                    print("Pineconeクライアントは利用できませんが、ローカルモードで継続します")
             except Exception as e:
                 print(f"Pineconeの初期化エラー: {e}")
                 print(f"詳細なエラー情報: {traceback.format_exc()}")

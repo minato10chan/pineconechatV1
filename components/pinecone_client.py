@@ -6,7 +6,7 @@ import time
 import requests
 import traceback
 
-# Pineconeのインポートを例外処理で囲む
+# Pineconeのインポートを試みるが、失敗しても続行
 try:
     import pinecone
     PINECONE_AVAILABLE = True
@@ -16,9 +16,6 @@ except Exception as e:
 
 class PineconeClient:
     def __init__(self):
-        if not PINECONE_AVAILABLE:
-            raise ImportError("Pineconeライブラリをインポートできません。requirements.txtの設定を確認してください。")
-            
         # 環境変数の取得とデバッグ情報表示
         self.api_key = os.environ.get("PINECONE_API_KEY")
         self.environment = os.environ.get("PINECONE_ENVIRONMENT", "us-east-1")
@@ -31,76 +28,67 @@ class PineconeClient:
         if not self.api_key:
             raise ValueError("PINECONE_API_KEY環境変数が設定されていません")
         
-        # インターネット接続確認（簡易的な方法）
+        # インターネット接続確認
         if not self._check_internet_connection():
-            raise ConnectionError("インターネット接続が確立できません")
+            print("インターネット接続に問題があります。ローカルモードで動作します。")
+            self.available = False
+            return
+            
+        # 直接REST APIを使用してPineconeに接続
+        self.headers = {
+            "Api-Key": self.api_key,
+            "Accept": "application/json",
+            "Content-Type": "application/json"
+        }
         
-        # 直接APIを使用してPineconeに接続する（DNSの問題を回避するため）
-        self._test_api_connection()
-        
-        # Pinecone初期化
-        try:
-            print(f"Pinecone初期化を開始します...")
-            pinecone.init(api_key=self.api_key, environment=self.environment)
-            print("Pinecone初期化成功")
-        except Exception as e:
-            print(f"Pinecone初期化エラー: {e}")
-            print("代替接続方法を使用します")
-        
-        # インデックスを確認
-        self._check_index()
-        
-        # インデックスを初期化
-        try:
-            self.index = pinecone.Index(self.index_name)
-            print(f"Pineconeインデックス '{self.index_name}' に接続しました")
-        except Exception as e:
-            print(f"インデックス接続エラー: {e}")
-            print("HTTPリクエストによる代替接続を使用します")
-        
+        # REST APIでの接続テスト
+        if self._test_api_connection_rest():
+            print("REST APIでPineconeに接続しました")
+            self.available = True
+            # インデックスを確認・作成
+            self._check_index_rest()
+        else:
+            print("PineconeへのREST API接続に失敗しました。ローカルモードで動作します。")
+            self.available = False
+            
+        # 名前空間設定
         self.namespace = "chat-history"
         print("Pineconeクライアントの初期化完了")
     
-    def _test_api_connection(self):
-        """直接APIを使用して接続テスト"""
+    def _test_api_connection_rest(self):
+        """REST APIを使用してPineconeに接続テスト"""
         try:
-            headers = {
-                "Api-Key": self.api_key,
-                "Accept": "application/json"
-            }
+            # REST APIでインデックス一覧を取得
+            api_url = "https://api.pinecone.io/indexes"
             
-            # ホスト名はPineconeのドキュメントに基づいて更新（環境に応じて）
-            api_url = f"https://api.pinecone.io/indexes"
-            
-            print(f"Pinecone APIに直接接続テスト中... URL: {api_url}")
-            response = requests.get(api_url, headers=headers, timeout=10)
+            print(f"Pinecone REST APIで接続テスト中... URL: {api_url}")
+            response = requests.get(api_url, headers=self.headers, timeout=10)
             
             if response.status_code == 200:
-                print(f"Pinecone API直接接続成功: {response.status_code}")
-                index_list = response.json()
-                print(f"利用可能なインデックス: {index_list}")
+                print(f"Pinecone REST API接続成功: {response.status_code}")
+                try:
+                    index_list = response.json()
+                    print(f"利用可能なインデックス: {index_list}")
+                except Exception as e:
+                    print(f"レスポンスのJSON解析エラー: {e}")
+                    print(f"レスポンス内容: {response.text}")
                 return True
             else:
-                print(f"Pinecone API接続エラー: {response.status_code} - {response.text}")
+                print(f"Pinecone REST API接続エラー: {response.status_code} - {response.text}")
                 return False
         except Exception as e:
-            print(f"Pinecone API接続テスト中の例外: {e}")
+            print(f"Pinecone REST API接続テスト中の例外: {e}")
             print(traceback.format_exc())
             return False
     
-    def _check_index(self):
-        """インデックスの存在確認と作成（必要な場合）"""
+    def _check_index_rest(self):
+        """REST APIを使用してインデックスの存在確認と作成"""
         try:
-            # 直接APIを使用してインデックスをチェック
-            headers = {
-                "Api-Key": self.api_key,
-                "Accept": "application/json"
-            }
-            
+            # インデックス情報を取得
             api_url = f"https://api.pinecone.io/indexes/{self.index_name}"
             print(f"インデックス '{self.index_name}' の存在確認中... URL: {api_url}")
             
-            response = requests.get(api_url, headers=headers, timeout=10)
+            response = requests.get(api_url, headers=self.headers, timeout=10)
             
             if response.status_code == 200:
                 print(f"インデックス '{self.index_name}' が存在します")
@@ -118,7 +106,7 @@ class PineconeClient:
                 
                 create_response = requests.post(
                     create_url, 
-                    headers={**headers, "Content-Type": "application/json"}, 
+                    headers=self.headers, 
                     json=create_data,
                     timeout=30
                 )
@@ -157,15 +145,14 @@ class PineconeClient:
                 return False
 
     def save_chat_history(self, chat_history):
-        """会話履歴をPineconeに保存"""
-        if not chat_history:
-            return
+        """会話履歴をPineconeに保存 (REST API使用)"""
+        if not chat_history or not self.available:
+            return None
         
         # 会話履歴をJSONに変換
         chat_json = json.dumps(chat_history)
         
         # タイムスタンプとユーザーIDを含むIDを生成
-        # 実際の実装ではユーザー認証と連携するとよい
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
         session_id = os.environ.get("STREAMLIT_SESSION_ID", str(uuid.uuid4()))
         vector_id = f"chat_{session_id}_{timestamp}"
@@ -174,30 +161,32 @@ class PineconeClient:
         metadata = {
             "timestamp": timestamp,
             "session_id": session_id,
-            "type": "chat_history"
+            "type": "chat_history",
+            "chat_data": chat_json
         }
         
         try:
-            # Pineconeライブラリを使用
-            try:
-                self.index.upsert(
-                    vectors=[
-                        {
-                            "id": vector_id,
-                            "values": [0.0],  # ダミーベクトル値
-                            "metadata": {
-                                **metadata,
-                                "chat_data": chat_json
-                            }
-                        }
-                    ],
-                    namespace=self.namespace
-                )
+            # REST APIでベクトルをアップサート
+            api_url = f"https://api.pinecone.io/vectors/upsert/{self.index_name}"
+            
+            data = {
+                "vectors": [
+                    {
+                        "id": vector_id,
+                        "values": [0.0],  # ダミーベクトル値
+                        "metadata": metadata
+                    }
+                ],
+                "namespace": self.namespace
+            }
+            
+            response = requests.post(api_url, headers=self.headers, json=data, timeout=30)
+            
+            if response.status_code in [200, 201, 202]:
                 print(f"会話履歴をPineconeに保存しました: {vector_id}")
                 return vector_id
-            except Exception as e:
-                print(f"Pineconeライブラリでの保存エラー: {e}")
-                # 直接APIを使用する代替方法を実装するとよい
+            else:
+                print(f"会話履歴の保存エラー: {response.status_code} - {response.text}")
                 return None
         except Exception as e:
             print(f"Pineconeへの保存エラー: {e}")
@@ -205,7 +194,10 @@ class PineconeClient:
             return None
     
     def load_chat_history(self, session_id=None):
-        """Pineconeから会話履歴を読み込む"""
+        """Pineconeから会話履歴を読み込む (REST API使用)"""
+        if not self.available:
+            return None
+            
         # セッションIDが指定されていなければ環境変数から取得
         if not session_id:
             session_id = os.environ.get("STREAMLIT_SESSION_ID", None)
@@ -214,36 +206,39 @@ class PineconeClient:
             print("セッションIDが指定されていないため、会話履歴を読み込めません")
             return None
         
-        # セッションIDに基づいて検索
-        query = {
-            "session_id": session_id,
-            "type": "chat_history"
-        }
-        
         try:
             print(f"セッションID '{session_id}' の会話履歴を検索中...")
-            # Pineconeから検索
-            try:
-                results = self.index.query(
-                    vector=[0.0],  # ダミークエリベクトル
-                    filter=query,
-                    top_k=1,
-                    include_metadata=True,
-                    namespace=self.namespace
-                )
-                
-                if results.matches and len(results.matches) > 0:
+            
+            # REST APIでクエリ実行
+            api_url = f"https://api.pinecone.io/query/{self.index_name}"
+            
+            data = {
+                "vector": [0.0],  # ダミークエリベクトル
+                "filter": {
+                    "session_id": {"$eq": session_id},
+                    "type": {"$eq": "chat_history"}
+                },
+                "top_k": 1,
+                "include_metadata": True,
+                "namespace": self.namespace
+            }
+            
+            response = requests.post(api_url, headers=self.headers, json=data, timeout=30)
+            
+            if response.status_code == 200:
+                result = response.json()
+                if result.get("matches") and len(result["matches"]) > 0:
                     # 最新の会話履歴を取得
-                    chat_data = results.matches[0].metadata.get("chat_data")
+                    chat_data = result["matches"][0]["metadata"].get("chat_data")
                     if chat_data:
                         print(f"Pineconeから会話履歴を読み込みました: {session_id}")
                         return json.loads(chat_data)
+                    else:
+                        print("会話履歴データが見つかりません")
                 else:
                     print(f"セッションID '{session_id}' の会話履歴が見つかりませんでした")
-            except Exception as e:
-                print(f"Pineconeライブラリでの読み込みエラー: {e}")
-                # 直接APIを使用する代替方法を実装するとよい
-                return None
+            else:
+                print(f"会話履歴の検索エラー: {response.status_code} - {response.text}")
         except Exception as e:
             print(f"Pineconeからの読み込みエラー: {e}")
             print(traceback.format_exc())
