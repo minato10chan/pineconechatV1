@@ -4,6 +4,7 @@ import pandas as pd
 import io
 import os
 import time
+import traceback
 
 # Pineconeクライアントをインポート - try-exceptで囲む
 try:
@@ -17,14 +18,32 @@ class ChatHistory:
     def __init__(self):
         # Pineconeクライアントの初期化
         self.pinecone_available = False
+        
+        # セッション状態にPinecone初期化済みフラグがあれば再初期化しない
+        if 'pinecone_initialized' in st.session_state:
+            self.pinecone_available = st.session_state.get('pinecone_available', False)
+            if self.pinecone_available and 'pinecone_client' in st.session_state:
+                self.pinecone_client = st.session_state.pinecone_client
+                print("セッション状態からPineconeクライアントを復元しました")
+            return
+                
         if PINECONE_IMPORT_SUCCESS:
             try:
+                print("Pineconeクライアントの初期化を開始します...")
                 self.pinecone_client = PineconeClient()
                 self.pinecone_available = True
+                # セッション状態に保存
+                st.session_state.pinecone_client = self.pinecone_client
+                st.session_state.pinecone_available = True
                 print("Pineconeクライアントを初期化しました")
             except Exception as e:
                 print(f"Pineconeの初期化エラー: {e}")
+                print(f"詳細なエラー情報: {traceback.format_exc()}")
                 self.pinecone_available = False
+                st.session_state.pinecone_available = False
+                
+        # 初期化したフラグを設定
+        st.session_state.pinecone_initialized = True
         
         # セッション状態に会話履歴が存在しない場合は初期化
         if 'chat_history' not in st.session_state:
@@ -40,6 +59,7 @@ class ChatHistory:
                         print("Pineconeに復元可能な会話履歴がありませんでした")
                 except Exception as e:
                     print(f"会話履歴のロードエラー: {e}")
+                    print(f"詳細なエラー情報: {traceback.format_exc()}")
                     st.session_state.chat_history = []
             else:
                 st.session_state.chat_history = []
@@ -94,6 +114,7 @@ class ChatHistory:
                 print("Pineconeの会話履歴をクリアしました")
             except Exception as e:
                 print(f"会話履歴のクリア中にエラー: {e}")
+                print(f"詳細なエラー情報: {traceback.format_exc()}")
     
     def get_formatted_history(self) -> str:
         """会話履歴を文字列形式で取得"""
@@ -134,6 +155,7 @@ class ChatHistory:
                     print("会話履歴をPineconeに保存しました")
             except Exception as e:
                 print(f"会話履歴の保存中にエラー: {e}")
+                print(f"詳細なエラー情報: {traceback.format_exc()}")
     
     def force_save(self):
         """会話履歴を強制的にPineconeに保存"""
@@ -147,5 +169,6 @@ class ChatHistory:
                 return False
             except Exception as e:
                 print(f"会話履歴の強制保存中にエラー: {e}")
+                print(f"詳細なエラー情報: {traceback.format_exc()}")
                 return False
         return False 

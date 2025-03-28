@@ -55,13 +55,26 @@ chat_history = ChatHistory()
 # VectorStoreのインスタンスを初期化する関数
 def initialize_vector_store():
     global vector_store, vector_store_available
+    
+    # 既に初期化済みの場合は再初期化しない
     if vector_store is not None:
+        print("VectorStoreは既に初期化されています。再初期化をスキップします。")
+        return vector_store
+    
+    # セッション状態に保存されている場合はそれを使用
+    if 'vector_store' in st.session_state and st.session_state.vector_store is not None:
+        vector_store = st.session_state.vector_store
+        vector_store_available = True
+        print("セッション状態からVectorStoreを復元しました")
         return vector_store
         
     try:
+        print("VectorStoreの初期化を開始します...")
         from src.vector_store import VectorStore
         vector_store = VectorStore()
         vector_store_available = True
+        # セッション状態に保存
+        st.session_state.vector_store = vector_store
         print("VectorStore successfully initialized")
         return vector_store
     except Exception as e:
@@ -69,8 +82,10 @@ def initialize_vector_store():
         print(f"Error initializing VectorStore: {e}")
         return None
 
-# 初期化を試みる
-initialize_vector_store()
+# 最初の1回だけ初期化を試みる
+if 'vector_store_initialized' not in st.session_state:
+    initialize_vector_store()
+    st.session_state.vector_store_initialized = True
 
 def register_document(uploaded_file, additional_metadata=None):
     """
@@ -572,12 +587,51 @@ def main():
     # タイトルを表示
     st.title('🦜🔗 Ask the Doc App')
 
+    # サイドバーにデバッグ情報表示ボタンを追加
+    with st.sidebar:
+        st.title("メニュー")
+        
+        # 開発者向けデバッグ情報
+        with st.expander("デバッグ情報", expanded=False):
+            if st.button("環境変数をチェック"):
+                # 環境変数の確認（APIキーは安全のためマスク）
+                env_vars = {
+                    "OPENAI_API_KEY": "設定済み" if os.environ.get("OPENAI_API_KEY") else "未設定",
+                    "PINECONE_API_KEY": "設定済み" if os.environ.get("PINECONE_API_KEY") else "未設定",
+                    "PINECONE_ENVIRONMENT": os.environ.get("PINECONE_ENVIRONMENT", "未設定"),
+                    "PINECONE_INDEX": os.environ.get("PINECONE_INDEX", "未設定"),
+                    "STREAMLIT_SESSION_ID": os.environ.get("STREAMLIT_SESSION_ID", "自動生成")
+                }
+                st.json(env_vars)
+                
+                # Pineconeの接続状態
+                st.write("#### Pineconeの状態")
+                pinecone_status = {
+                    "利用可能": chat_history.pinecone_available,
+                    "初期化済み": st.session_state.get("pinecone_initialized", False)
+                }
+                st.json(pinecone_status)
+                
+                # VectorStoreの状態
+                st.write("#### VectorStoreの状態")
+                vs_status = {
+                    "利用可能": vector_store_available,
+                    "初期化済み": st.session_state.get("vector_store_initialized", False)
+                }
+                st.json(vs_status)
+                
+            if st.button("セッション状態表示"):
+                # セッション状態の表示（センシティブな情報は除外）
+                safe_session = {k: v for k, v in st.session_state.items() 
+                              if k not in ['pinecone_client', 'vector_store']}
+                st.json(safe_session)
+
+    # ChromaDBが使用できない場合はフォールバックモード
     if not vector_store_available:
         fallback_mode()
         return
 
-    # サイドバーでページ選択
-    st.sidebar.title("メニュー")
+    # ページ選択
     page = st.sidebar.radio("ページを選択してください", ["ChromaDB 管理", "質問する", "プロンプト管理"])
 
     # 各ページへ移動
