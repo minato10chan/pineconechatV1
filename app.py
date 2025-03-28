@@ -587,6 +587,13 @@ def main():
         manage_chromadb()
     elif page == "プロンプト管理":
         manage_prompts()
+    
+    # ページが変更されるたびにPineconeに会話履歴を保存
+    chat_history.force_save()
+    
+    # アプリケーション終了時に会話履歴を保存するための関数を登録
+    import atexit
+    atexit.register(lambda: chat_history.force_save())
 
 if __name__ == "__main__":
     main()
