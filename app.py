@@ -1,12 +1,4 @@
-# SQLiteをpysqlite3で上書き
-try:
-    __import__('pysqlite3')
-    import sys
-    sys.modules['sqlite3'] = sys.modules.pop('pysqlite3')
-    print("Successfully overrode sqlite3 with pysqlite3")
-except ImportError:
-    print("Failed to override sqlite3 with pysqlite3")
-
+# pysqlite3コードを削除
 import streamlit as st
 import datetime
 
@@ -71,7 +63,7 @@ def initialize_vector_store():
     try:
         print("VectorStoreの初期化を開始します...")
         
-        # まずPineconeベースのベクトルストアの初期化を試みる
+        # Pineconeベースのベクトルストアの初期化
         try:
             from src.pinecone_vector_store import PineconeVectorStore
             vector_store = PineconeVectorStore()
@@ -79,19 +71,9 @@ def initialize_vector_store():
             print("PineconeベースのVectorStoreを初期化しました")
         except Exception as e:
             print(f"PineconeVectorStoreの初期化中にエラー: {e}")
-            print("ChromaDBベースのVectorStoreを試します...")
-            
-            # PineconeVectorStoreが失敗した場合、ChromaDBを試みる（ローカル環境用）
-            try:
-                from src.vector_store import VectorStore
-                vector_store = VectorStore()
-                vector_store_available = True
-                print("ChromaDBベースのVectorStoreを初期化しました")
-            except Exception as e:
-                print(f"ChromaDBVectorStoreの初期化中にエラー: {e}")
-                vector_store_available = False
-                vector_store = None
-                raise
+            vector_store_available = False
+            vector_store = None
+            raise
         
         # セッション状態に保存
         st.session_state.vector_store = vector_store
@@ -199,12 +181,10 @@ def manage_db():
 
     if not vector_store_available:
         st.error("ベクトルデータベースの接続でエラーが発生しました。現在、ベクトルデータベースは使用できません。")
-        st.warning("これはSQLiteのバージョンの非互換性によるものかもしれません。Streamlit CloudではChromaDBに制限があります。")
         
         # デバッグ情報
         st.sidebar.expander("デバッグ情報", expanded=False).write("""
-        Streamlit CloudではSQLiteのバージョン制限によりChromaDBが利用できない場合があります。
-        代わりにPineconeを使用するため、Pinecone APIキーを設定してください。
+        Pineconeを使用するため、Pinecone APIキーを設定してください。
         """)
         return
 
