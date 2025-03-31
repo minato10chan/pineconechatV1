@@ -62,19 +62,32 @@ class PineconeVectorStore:
 
             # 埋め込みモデルの設定
             try:
-                self.embeddings = OpenAIEmbeddings()
+                from components.llm import oai_embeddings
+                self.embeddings = oai_embeddings
                 print("OpenAI埋め込みモデルの初期化が完了しました")
             except Exception as e:
                 print(f"OpenAI埋め込みモデルの初期化エラー: {e}")
                 print(traceback.format_exc())
                 raise
                 
+            # 一時的な障害モードかどうか
+            self.temporary_failure = getattr(self.pinecone_client, 'temporary_failure', False)
+            self.is_streamlit_cloud = getattr(self.pinecone_client, 'is_streamlit_cloud', False)
+            
+            # 緊急オフラインモード用のメモリ内ストレージ
+            self.offline_storage = {
+                "vectors": [],
+                "metadata": [],
+                "ids": []
+            }
+            
             print("PineconeVectorStoreの初期化が完了しました")
             
         except Exception as e:
             print(f"PineconeVectorStoreの初期化中にエラーが発生しました: {e}")
             print(traceback.format_exc())
             self.available = False
+            self.temporary_failure = False
             raise
 
     def _check_rest_api_connection(self):
@@ -113,20 +126,26 @@ class PineconeVectorStore:
 
     def upsert_documents(self, documents, ids=None):
         """ドキュメントを追加または更新"""
-        # REST API接続を再確認し、強制的に有効化
-        try:
-            rest_api_available = self._check_rest_api_connection()
-            if rest_api_available:
-                print("ドキュメントアップロード前: REST API接続が確認できました。利用可能に設定します。")
-                self.available = True
-                if hasattr(self, 'pinecone_client') and hasattr(self.pinecone_client, 'available'):
-                    self.pinecone_client.available = True
-        except Exception as e:
-            print(f"REST API接続確認中にエラー: {e}")
-            
-        if not self.available:
-            print("Pineconeが利用できないため、ドキュメントをアップロードできません")
-            raise ValueError("ベクトルデータベースが利用できないため、ドキュメントをアップロードできません。REST API接続も失敗しました。")
+        # 緊急モード検出：Streamlit Cloud環境で一時的な障害がある場合
+        emergency_mode = self.is_streamlit_cloud and self.temporary_failure
+        if emergency_mode:
+            print("緊急オフラインモード: ドキュメントをメモリ内ストレージに保存します")
+        elif not self.available:
+            # REST API接続を再確認し、強制的に有効化
+            try:
+                rest_api_available = self._check_rest_api_connection()
+                if rest_api_available:
+                    print("ドキュメントアップロード前: REST API接続が確認できました。利用可能に設定します。")
+                    self.available = True
+                    if hasattr(self, 'pinecone_client') and hasattr(self.pinecone_client, 'available'):
+                        self.pinecone_client.available = True
+            except Exception as e:
+                print(f"REST API接続確認中にエラー: {e}")
+                
+            # 通常モードで利用できない場合はエラー
+            if not self.available and not emergency_mode:
+                print("Pineconeが利用できないため、ドキュメントをアップロードできません")
+                raise ValueError("ベクトルデータベースが利用できないため、ドキュメントをアップロードできません。REST API接続も失敗しました。")
         
         try:
             # Documentオブジェクトの場合とプレーンテキストの場合の両方に対応
@@ -147,6 +166,24 @@ class PineconeVectorStore:
             print(f"{len(texts)}件のドキュメントの埋め込みベクトルを生成中...")
             embeddings = self.embeddings.embed_documents(texts)
             
+            # 緊急オフラインモードの場合、メモリに保存して成功を返す
+            if emergency_mode:
+                for i, (id_, text, metadata, embedding) in enumerate(zip(ids, texts, metadatas, embeddings)):
+                    # メタデータにテキスト内容を含める
+                    metadata['text'] = text
+                    
+                    # オフラインストレージに保存
+                    self.offline_storage["ids"].append(id_)
+                    self.offline_storage["vectors"].append(embedding)
+                    self.offline_storage["metadata"].append(metadata)
+                    
+                    if (i + 1) % 10 == 0 or i == len(ids) - 1:
+                        print(f"緊急モード: {i+1}/{len(ids)}件のベクトルをメモリ内ストレージに保存しました")
+                
+                print(f"緊急モード: 合計{len(ids)}件のドキュメントをメモリ内に保存しました")
+                return True
+            
+            # 通常のPinecone処理（既存のコード）
             # Pineconeに登録するベクトル配列を作成
             vectors = []
             for i, (id_, text, metadata, embedding) in enumerate(zip(ids, texts, metadatas, embeddings)):
@@ -188,6 +225,15 @@ class PineconeVectorStore:
         except Exception as e:
             print(f"ドキュメントのアップロード中にエラーが発生しました: {e}")
             print(traceback.format_exc())
+            
+            # 例外発生時、緊急モードを有効化
+            if self.is_streamlit_cloud and not self.temporary_failure:
+                print("例外発生により緊急オフラインモードに切り替えます。次回の実行でメモリ内ストレージを使用します。")
+                self.temporary_failure = True
+                if hasattr(self.pinecone_client, 'temporary_failure'):
+                    self.pinecone_client.temporary_failure = True
+                    self.pinecone_client.failed_attempts = 3  # 強制的に失敗状態にする
+            
             raise
 
     def _upsert_batch(self, vectors):
@@ -371,9 +417,58 @@ class PineconeVectorStore:
 
     def search(self, query, n_results=5, filter_conditions=None):
         """クエリに基づいてドキュメントを検索"""
+        # 緊急モード検出
+        emergency_mode = self.is_streamlit_cloud and self.temporary_failure
+        if emergency_mode and len(self.offline_storage["vectors"]) > 0:
+            print("緊急オフラインモード: メモリ内ストレージを検索します")
+            
+            try:
+                # クエリの埋め込みを生成
+                query_embedding = self.embeddings.embed_query(query)
+                
+                # コサイン類似度を計算
+                cos_scores = []
+                for vec in self.offline_storage["vectors"]:
+                    # 簡易的なコサイン類似度計算
+                    dot_product = sum(a*b for a, b in zip(query_embedding, vec))
+                    magnitude1 = sum(a*a for a in query_embedding) ** 0.5
+                    magnitude2 = sum(b*b for b in vec) ** 0.5
+                    similarity = dot_product / (magnitude1 * magnitude2) if magnitude1 * magnitude2 > 0 else 0
+                    cos_scores.append(similarity)
+                
+                # フィルター条件の適用（簡易的）
+                filtered_indices = list(range(len(cos_scores)))
+                if filter_conditions:
+                    filtered_indices = []
+                    for i, metadata in enumerate(self.offline_storage["metadata"]):
+                        match = True
+                        for key, value in filter_conditions.items():
+                            if key in metadata and metadata[key] != value:
+                                match = False
+                                break
+                        if match:
+                            filtered_indices.append(i)
+                
+                # スコアでソートして上位n_results件を取得
+                sorted_indices = sorted(filtered_indices, key=lambda i: cos_scores[i], reverse=True)[:n_results]
+                
+                # 結果を構築
+                results = {
+                    "ids": [[self.offline_storage["ids"][i] for i in sorted_indices]],
+                    "documents": [[self.offline_storage["metadata"][i].get("text", "") for i in sorted_indices]],
+                    "distances": [[1.0 - cos_scores[i] for i in sorted_indices]],
+                    "metadatas": [[{k: v for k, v in self.offline_storage["metadata"][i].items() if k != "text"} for i in sorted_indices]]
+                }
+                
+                print(f"緊急モード: {len(sorted_indices)}件の結果をメモリ内ストレージから検索しました")
+                return results
+            except Exception as e:
+                print(f"緊急モードでの検索中にエラー: {e}")
+                print(traceback.format_exc())
+        
         if not self.available:
             return {"ids": [[]], "documents": [[]], "distances": [[]], "metadatas": [[]]}
-            
+        
         try:
             # クエリの埋め込みを生成
             query_embedding = self.embeddings.embed_query(query)

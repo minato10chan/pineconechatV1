@@ -406,8 +406,41 @@ def manage_db():
     global vector_store, vector_store_available
 
     st.header("ベクトルデータベース管理")
+    
+    # 緊急モードの検出
+    emergency_mode = False
+    if vector_store:
+        emergency_mode = getattr(vector_store, 'temporary_failure', False) and getattr(vector_store, 'is_streamlit_cloud', False)
+        if emergency_mode:
+            st.warning("⚠️ 緊急オフラインモードで動作中です。Pineconeへの接続は一時的に無効化されています。メモリ内ストレージを使用します。")
+            # 緊急モード時は制限された機能を表示
+            offline_storage = getattr(vector_store, 'offline_storage', None)
+            if offline_storage:
+                item_count = len(offline_storage.get("ids", []))
+                st.info(f"メモリ内ストレージには現在 {item_count} 件のベクトルが保存されています")
+                
+                # 緊急モードを解除するボタン
+                if st.button("緊急モードを解除"):
+                    try:
+                        vector_store.temporary_failure = False
+                        if hasattr(vector_store, 'pinecone_client'):
+                            vector_store.pinecone_client.temporary_failure = False
+                            vector_store.pinecone_client.failed_attempts = 0
+                        st.success("緊急モードを解除しました。ページを再読み込みします。")
+                        time.sleep(1)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"緊急モード解除中にエラーが発生しました: {e}")
+            
+            # 緊急モードでもアップロード機能を提供する
+            st.subheader("ドキュメントを緊急モードで登録")
+            # （以下、アップロード用のUIコードをシンプルに提供）
+            uploaded_file = st.file_uploader('テキストをアップロードしてください', type='txt', key="emergency_uploader")
+            if uploaded_file and st.button("緊急モードで登録"):
+                with st.spinner('メモリ内ストレージに登録中...'):
+                    register_document(uploaded_file, additional_metadata={"emergency_mode": True})
 
-    if not vector_store_available:
+    if not vector_store_available and not emergency_mode:
         error_message = "ベクトルデータベースの接続でエラーが発生しました。現在、ベクトルデータベースは使用できません。"
         
         # より詳細なエラー情報を表示
@@ -457,6 +490,24 @@ def manage_db():
                 if hasattr(client, 'initialization_error'):
                     st.write(f"- 初期化エラー: {client.initialization_error}")
         
+        # 緊急モードへの切り替えボタン
+        if vector_store and st.button("緊急オフラインモードに切り替え"):
+            try:
+                if hasattr(vector_store, 'pinecone_client'):
+                    vector_store.temporary_failure = True
+                    vector_store.is_streamlit_cloud = True
+                    
+                    if hasattr(vector_store.pinecone_client, 'temporary_failure'):
+                        vector_store.pinecone_client.temporary_failure = True
+                        vector_store.pinecone_client.is_streamlit_cloud = True
+                        vector_store.pinecone_client.failed_attempts = 3
+                    
+                    st.success("緊急オフラインモードに切り替えました。ページを再読み込みします。")
+                    time.sleep(1)
+                    st.rerun()
+            except Exception as e:
+                st.error(f"緊急モードへの切り替え中にエラーが発生しました: {e}")
+        
         # リトライボタンを提供
         if st.button("接続を再試行"):
             with st.spinner("Pineconeへの接続を再試行しています..."):
@@ -490,9 +541,11 @@ def manage_db():
         1. インターネット接続が安定しているか
         2. Pinecone APIキーが正しく設定されているか
         3. インデックスが存在し、アクセス可能か
+        
+        問題が解決しない場合は「緊急オフラインモード」を使用すると、一時的にメモリ内ストレージでアプリを使用できます。
         """)
         return
-
+    
     # 1.ドキュメント登録
     st.subheader("ドキュメントをデータベースに登録")
     
