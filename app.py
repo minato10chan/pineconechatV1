@@ -208,23 +208,37 @@ def register_document(uploaded_file, additional_metadata=None):
                 original_ids.append(id_str)
 
             # ドキュメントの追加（UPSERT）
-            result = vector_store.upsert_documents(documents=documents, ids=original_ids)
-            
-            if result:
-                st.success(f"{uploaded_file.name} をデータベースに登録しました。")
-                st.info(f"{len(documents)}件のチャンクに分割されました")
-            else:
-                st.warning(f"{uploaded_file.name} の登録に問題がありました。詳細はログを確認してください。")
+            try:
+                result = vector_store.upsert_documents(documents=documents, ids=original_ids)
+                
+                if result:
+                    st.success(f"{uploaded_file.name} をデータベースに登録しました。")
+                    st.info(f"{len(documents)}件のチャンクに分割されました")
+                else:
+                    st.warning(f"{uploaded_file.name} の登録に問題がありました。詳細はログを確認してください。")
+            except Exception as upsert_error:
+                st.error(f"ドキュメントの登録中にエラーが発生しました: {str(upsert_error)}")
+                st.error("エラーの詳細:")
+                st.exception(upsert_error)
+                # エラーの詳細をログに出力
+                print(f"Upsert error details: {str(upsert_error)}")
+                print(f"Error type: {type(upsert_error)}")
+                print(f"Error traceback: {traceback.format_exc()}")
             
         except Exception as e:
-            st.error(f"ドキュメントの登録中にエラーが発生しました: {e}")
+            st.error(f"ドキュメントの処理中にエラーが発生しました: {str(e)}")
             st.error("エラーの詳細:")
             st.exception(e)
+            # エラーの詳細をログに出力
+            print(f"Document processing error details: {str(e)}")
+            print(f"Error type: {type(e)}")
+            print(f"Error traceback: {traceback.format_exc()}")
 
 def manage_db():
     """
     ベクトルデータベースを管理するページの関数。
     """
+    # グローバル変数の宣言を最初に移動
     global vector_store
 
     st.header("ベクトルデータベース管理")
