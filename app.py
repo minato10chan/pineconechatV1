@@ -236,18 +236,60 @@ def register_document(uploaded_file, additional_metadata=None):
     try:
         if uploaded_file:
             logger.info(f"ファイル読み込み開始: {time.time() - start_time:.2f}秒経過")
-            # ファイル読み込み処理...
+            
+            # ファイルの内容を読み込む
+            content = uploaded_file.read().decode('utf-8')
+            
+            # テキストを分割
+            text_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=1000,
+                chunk_overlap=200,
+                length_function=len,
+                separators=["\n\n", "\n", " ", ""]
+            )
+            texts = text_splitter.split_text(content)
+            
+            # バッチサイズの設定
+            BATCH_SIZE = 100
+            total_batches = (len(texts) + BATCH_SIZE - 1) // BATCH_SIZE
             
             # バッチ処理の開始前にログ
             logger.info(f"ベクトルDB登録処理開始: {time.time() - start_time:.2f}秒経過")
+            logger.info(f"総テキスト数: {len(texts)}, バッチ数: {total_batches}")
             
             # 各バッチ処理でログ
-            for batch_idx in range(バッチ数):
-                logger.info(f"バッチ {batch_idx+1} 処理開始: {time.time() - start_time:.2f}秒経過")
-                # バッチ処理...
-                logger.info(f"バッチ {batch_idx+1} 処理完了: {time.time() - start_time:.2f}秒経過, 結果: {'成功' if 成功 else '失敗'}")
+            for batch_idx in range(total_batches):
+                start_idx = batch_idx * BATCH_SIZE
+                end_idx = min((batch_idx + 1) * BATCH_SIZE, len(texts))
+                current_batch = texts[start_idx:end_idx]
+                
+                logger.info(f"バッチ {batch_idx+1}/{total_batches} 処理開始: {time.time() - start_time:.2f}秒経過")
+                logger.info(f"バッチサイズ: {len(current_batch)}")
+                
+                # メタデータの準備
+                batch_metadata = []
+                for text in current_batch:
+                    metadata = {
+                        "source": uploaded_file.name,
+                        "chunk_index": len(batch_metadata),
+                        "timestamp": datetime.datetime.now().isoformat()
+                    }
+                    if additional_metadata:
+                        metadata.update(additional_metadata)
+                    batch_metadata.append(metadata)
+                
+                # バッチの登録
+                success = vector_store.add_documents(current_batch)
+                
+                if success:
+                    logger.info(f"バッチ {batch_idx+1}/{total_batches} 処理完了: {time.time() - start_time:.2f}秒経過")
+                else:
+                    logger.error(f"バッチ {batch_idx+1}/{total_batches} 処理失敗: {time.time() - start_time:.2f}秒経過")
+                    return False
             
             logger.info(f"==== ファイル処理完了: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')}, 合計処理時間: {time.time() - start_time:.2f}秒 ====")
+            return True
+            
     except Exception as e:
         logger.error(f"ファイル処理エラー: {str(e)}")
         logger.error(traceback.format_exc())
