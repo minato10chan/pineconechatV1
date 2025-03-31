@@ -8,6 +8,10 @@ import traceback
 # 環境変数を確実にロード
 load_dotenv(override=True)
 
+# グローバル変数の初期化
+vector_store = None
+vector_store_available = False
+
 # Pinecone APIキーが環境変数から正しく読み込まれているか確認
 pinecone_api_key = os.environ.get("PINECONE_API_KEY")
 pinecone_env = os.environ.get("PINECONE_ENVIRONMENT")
@@ -55,9 +59,7 @@ if 'custom_prompts' not in st.session_state:
 if 'selected_prompt' not in st.session_state:
     st.session_state.selected_prompt = 'デフォルト'
 
-# グローバル変数の初期化
-vector_store = None
-vector_store_available = False
+# チャット履歴の初期化
 chat_history = ChatHistory()
 
 # VectorStoreのインスタンスを初期化する関数
