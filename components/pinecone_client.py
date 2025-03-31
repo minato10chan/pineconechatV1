@@ -393,12 +393,15 @@ class PineconeClient:
                     index_list = response.json()
                     print(f"利用可能なインデックス: {index_list}")
                     # インデックスが存在するかチェック
-                    if self.index_name in index_list:
-                        print(f"インデックス '{self.index_name}' が存在します")
-                        return True
+                    if 'indexes' in index_list:
+                        index_names = [index['name'] for index in index_list['indexes']]
+                        if self.index_name in index_names:
+                            print(f"インデックス '{self.index_name}' が存在します")
+                            return True
+                        else:
+                            print(f"インデックス '{self.index_name}' が見つかりません。作成を試みます。")
                     else:
-                        print(f"インデックス '{self.index_name}' が見つかりません。作成を試みます。")
-                        # インデックス作成コードは_check_index_restメソッドに移動
+                        print("インデックスリストの形式が不正です")
                 except Exception as e:
                     print(f"レスポンスのJSON解析エラー: {e}")
                     print(f"レスポンス内容: {response.text}")

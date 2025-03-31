@@ -139,13 +139,28 @@ class PineconeVectorStore:
                     self.available = True
                     if hasattr(self, 'pinecone_client') and hasattr(self.pinecone_client, 'available'):
                         self.pinecone_client.available = True
+                else:
+                    print("ドキュメントアップロード前: REST API接続の確認に失敗しました")
+                    print("接続状態の詳細:")
+                    print(f"- vector_store_available: {self.available}")
+                    print(f"- pinecone_client_available: {getattr(self.pinecone_client, 'available', False)}")
+                    print(f"- temporary_failure: {self.temporary_failure}")
+                    print(f"- is_streamlit_cloud: {self.is_streamlit_cloud}")
             except Exception as e:
                 print(f"REST API接続確認中にエラー: {e}")
+                print(traceback.format_exc())
                 
             # 通常モードで利用できない場合はエラー
             if not self.available and not emergency_mode:
-                print("Pineconeが利用できないため、ドキュメントをアップロードできません")
-                raise ValueError("ベクトルデータベースが利用できないため、ドキュメントをアップロードできません。REST API接続も失敗しました。")
+                error_msg = "ベクトルデータベースが利用できないため、ドキュメントをアップロードできません。"
+                error_msg += "\nREST API接続も失敗しました。"
+                error_msg += "\n\nデバッグ情報:"
+                error_msg += f"\n- vector_store_available: {self.available}"
+                error_msg += f"\n- pinecone_client_available: {getattr(self.pinecone_client, 'available', False)}"
+                error_msg += f"\n- temporary_failure: {self.temporary_failure}"
+                error_msg += f"\n- is_streamlit_cloud: {self.is_streamlit_cloud}"
+                print(error_msg)
+                raise ValueError(error_msg)
         
         try:
             # Documentオブジェクトの場合とプレーンテキストの場合の両方に対応
