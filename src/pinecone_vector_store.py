@@ -241,6 +241,15 @@ class PineconeVectorStore:
         max_retries = 3
         retry_count = 0
         
+        # デバッグ用に詳細情報を記録
+        debug_info = {
+            "batch_size": len(vectors),
+            "retry_attempts": 0,
+            "errors": [],
+            "success": False,
+            "responses": []
+        }
+        
         while retry_count < max_retries:
             try:
                 # クライアントが利用可能かチェック
@@ -254,20 +263,45 @@ class PineconeVectorStore:
                         print("_upsert_batch: REST API接続が確認できました。強制的に利用可能に設定します。")
                     else:
                         print("Pineconeクライアントが利用できないため、ベクトルをアップロードできません")
+                        debug_info["errors"].append({
+                            "stage": "availability_check",
+                            "message": "Pineconeクライアントが利用できません",
+                            "client_available": getattr(self.pinecone_client, 'available', False),
+                            "self_available": self.available
+                        })
                         return False
                 
                 # 公式SDKがある場合はSDKを使用
                 if hasattr(self.pinecone_client, 'index'):
                     try:
                         print("SDKを使用してベクトルをアップロード中...")
+                        print(f"バッチサイズ: {len(vectors)}、名前空間: {self.namespace}")
+                        
+                        # SDK呼び出し前の状態をログ記録
+                        debug_info["sdk_attempt"] = {
+                            "namespace": self.namespace,
+                            "num_vectors": len(vectors),
+                            "has_pinecone_index": hasattr(self.pinecone_client, 'index')
+                        }
+                        
                         self.pinecone_client.index.upsert(
                             vectors=vectors,
                             namespace=self.namespace
                         )
                         print("SDKを使用したアップロード成功")
+                        debug_info["success"] = True
+                        debug_info["method"] = "sdk"
                         return True
                     except Exception as e:
                         print(f"SDK経由でのバッチアップサートエラー: {e}")
+                        print(f"エラータイプ: {type(e).__name__}")
+                        print(traceback.format_exc())
+                        debug_info["errors"].append({
+                            "stage": "sdk_upsert",
+                            "message": str(e),
+                            "error_type": type(e).__name__,
+                            "traceback": traceback.format_exc()
+                        })
                         print("REST APIでの代替処理を試みます...")
                         
                 # REST APIでアップサート
@@ -278,21 +312,47 @@ class PineconeVectorStore:
                     "namespace": self.namespace
                 }
                 
+                # APIリクエスト前の状態をログ記録
+                debug_info["rest_attempt"] = {
+                    "url": api_url,
+                    "namespace": self.namespace,
+                    "num_vectors": len(vectors),
+                    "data_size": len(json.dumps(data))
+                }
+                
                 response = self.pinecone_client._make_request(
                     method="POST",
                     url=api_url,
                     json_data=data
                 )
                 
+                # レスポンス情報を記録
+                response_info = {
+                    "status_code": getattr(response, 'status_code', None),
+                    "response_text": getattr(response, 'text', '')[:500] # 長いレスポンスは切り詰める
+                }
+                debug_info["responses"].append(response_info)
+                
                 if response and response.status_code in [200, 201, 202]:
                     print(f"REST APIを使用したアップロード成功: {response.status_code}")
+                    debug_info["success"] = True
+                    debug_info["method"] = "rest_api"
                     return True
                 else:
-                    print(f"バッチアップサートエラー: {getattr(response, 'status_code', 'N/A')} - {getattr(response, 'text', 'No response')}")
+                    print(f"バッチアップサートエラー: {getattr(response, 'status_code', 'N/A')} - {getattr(response, 'text', 'No response')[:200]}")
+                    
+                    # エラー詳細をログに記録
+                    debug_info["errors"].append({
+                        "stage": "rest_api_response",
+                        "status_code": getattr(response, 'status_code', None),
+                        "response_text": getattr(response, 'text', '')[:500]
+                    })
+                    
                     # 500番台エラーの場合はリトライ
                     status_code = getattr(response, 'status_code', 0)
                     if 500 <= status_code < 600:
                         retry_count += 1
+                        debug_info["retry_attempts"] += 1
                         wait_time = 2 ** retry_count  # 指数バックオフ
                         print(f"サーバーエラーのため {wait_time} 秒待機してリトライします ({retry_count}/{max_retries})...")
                         time.sleep(wait_time)
@@ -300,16 +360,30 @@ class PineconeVectorStore:
                     return False
             except Exception as e:
                 print(f"バッチアップサート中のエラー: {e}")
+                print(f"エラータイプ: {type(e).__name__}")
                 print(traceback.format_exc())
+                
+                # エラー詳細をログに記録
+                debug_info["errors"].append({
+                    "stage": "general_exception",
+                    "message": str(e),
+                    "error_type": type(e).__name__,
+                    "traceback": traceback.format_exc()
+                })
+                
                 retry_count += 1
+                debug_info["retry_attempts"] += 1
                 if retry_count < max_retries:
                     wait_time = 2 ** retry_count  # 指数バックオフ
                     print(f"エラーのため {wait_time} 秒待機してリトライします ({retry_count}/{max_retries})...")
                     time.sleep(wait_time)
                 else:
+                    # 詳細なエラー情報をログに残す
+                    print(f"最大リトライ回数に達しました。デバッグ情報: {json.dumps(debug_info, default=str)}")
                     return False
         
         print(f"最大リトライ回数 ({max_retries}) に達しました。アップロードは失敗しました。")
+        print(f"詳細なデバッグ情報: {json.dumps(debug_info, default=str)}")
         return False
 
     def delete_documents(self, ids):

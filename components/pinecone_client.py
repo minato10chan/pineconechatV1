@@ -142,10 +142,24 @@ class PineconeClient:
         total_timeout = 60  # 全体の最大待機時間（秒）
         start_time = time.time()
         
+        # デバッグ用のリクエスト情報を記録
+        request_info = {
+            "method": method,
+            "url": url,
+            "params": params,
+            "max_retries": max_retries,
+            "timeout": timeout,
+            "start_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f"),
+            "retry_history": []
+        }
+        
         while retries < max_retries:
             # 全体のタイムアウトチェック
             if time.time() - start_time > total_timeout:
                 print(f"リクエスト全体がタイムアウトしました (最大: {total_timeout}秒)")
+                request_info["error"] = "total_timeout"
+                request_info["duration"] = time.time() - start_time
+                print(f"リクエスト詳細: {json.dumps(request_info, default=str)}")
                 return None
                 
             try:
@@ -162,6 +176,16 @@ class PineconeClient:
                 
                 # タイムアウトを調整（リトライ回数に応じて増加）
                 current_timeout = timeout * (1 + retries * 0.5)  # リトライごとにタイムアウトを50%ずつ増加
+                
+                # 試行情報を記録
+                retry_info = {
+                    "attempt": retries + 1,
+                    "timeout": current_timeout,
+                    "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
+                }
+                
+                # リクエストを実行
+                retry_start_time = time.time()
                 
                 if method.upper() == "GET":
                     response = requests.get(
@@ -188,19 +212,35 @@ class PineconeClient:
                     )
                 else:
                     print(f"サポートされていないHTTPメソッド: {method}")
+                    request_info["error"] = "unsupported_method"
+                    print(f"リクエスト詳細: {json.dumps(request_info, default=str)}")
                     return None
                 
-                print(f"レスポンス: ステータスコード {response.status_code}")
+                # レスポンス情報を記録
+                retry_info["duration"] = time.time() - retry_start_time
+                retry_info["status_code"] = response.status_code
+                
+                if hasattr(response, 'text'):
+                    if len(response.text) > 500:
+                        retry_info["response_text"] = response.text[:500] + "..."
+                    else:
+                        retry_info["response_text"] = response.text
+                
+                request_info["retry_history"].append(retry_info)
+                
+                print(f"レスポンス: ステータスコード {response.status_code} (所要時間: {retry_info['duration']:.2f}秒)")
                 
                 # エラーの場合は応答本文を表示
                 if response.status_code >= 400:
-                    print(f"エラーレスポンス本文: {response.text[:200]}..." if len(response.text) > 200 else response.text)
+                    print(f"エラーレスポンス本文: {response.text[:300]}..." if len(response.text) > 300 else response.text)
                 
                 # 一時的なサーバーエラーの場合は再試行
                 if response.status_code >= 500:
                     retries += 1
                     wait_time = min(2 ** retries, 30)  # 最大30秒まで待機
                     print(f"サーバーエラー ({response.status_code}): {wait_time}秒後に再試行します...")
+                    retry_info["retry_reason"] = f"server_error_{response.status_code}"
+                    retry_info["wait_time"] = wait_time
                     time.sleep(wait_time)
                     continue
                 
@@ -209,6 +249,8 @@ class PineconeClient:
                     retries += 1
                     wait_time = min(2 ** retries + 5, 45)  # レートリミットは長めに待機、最大45秒
                     print(f"レートリミットに達しました ({response.status_code}): {wait_time}秒後に再試行します...")
+                    retry_info["retry_reason"] = "rate_limit"
+                    retry_info["wait_time"] = wait_time
                     time.sleep(wait_time)
                     continue
                 
@@ -217,68 +259,120 @@ class PineconeClient:
                     retries += 1
                     wait_time = min(5 * retries, 30)  # サーバー問題の場合は長めに待機
                     print(f"サーバー一時的エラー ({response.status_code}): {wait_time}秒後に再試行します...")
+                    retry_info["retry_reason"] = f"server_temporary_{response.status_code}"
+                    retry_info["wait_time"] = wait_time
                     time.sleep(wait_time)
                     continue
+                
+                # 成功情報を記録
+                request_info["final_status"] = "success"
+                request_info["status_code"] = response.status_code
+                request_info["duration"] = time.time() - start_time
+                request_info["retries"] = retries
                 
                 return response
                 
             except requests.exceptions.ConnectionError as e:
                 print(f"接続エラー: {e}")
+                retry_info["error"] = "connection_error"
+                retry_info["error_details"] = str(e)
+                request_info["retry_history"].append(retry_info)
+                
                 retries += 1
                 if retries < max_retries:
                     wait_time = min(5 * retries, 30)
                     print(f"接続エラー - {wait_time}秒後に再試行します ({retries}/{max_retries})...")
+                    retry_info["wait_time"] = wait_time
                     time.sleep(wait_time)
                 else:
                     print("最大再試行回数に達しました")
+                    request_info["final_status"] = "connection_failure"
+                    request_info["duration"] = time.time() - start_time
+                    print(f"詳細情報: {json.dumps(request_info, default=str)}")
                     return None
                     
             except requests.exceptions.Timeout as e:
                 print(f"タイムアウトエラー: {e}")
+                retry_info["error"] = "timeout"
+                retry_info["error_details"] = str(e)
+                request_info["retry_history"].append(retry_info)
+                
                 retries += 1
                 if retries < max_retries:
                     wait_time = min(10 * retries, 45)  # タイムアウトは長めに待機
                     print(f"タイムアウト - {wait_time}秒後に再試行します ({retries}/{max_retries})...")
+                    retry_info["wait_time"] = wait_time
                     time.sleep(wait_time)
                 else:
                     print("最大再試行回数に達しました")
+                    request_info["final_status"] = "timeout_failure"
+                    request_info["duration"] = time.time() - start_time
+                    print(f"詳細情報: {json.dumps(request_info, default=str)}")
                     return None
                     
             except requests.exceptions.RequestException as e:
                 print(f"リクエスト例外: {e}")
+                retry_info["error"] = "request_exception"
+                retry_info["error_details"] = str(e)
+                request_info["retry_history"].append(retry_info)
+                
                 retries += 1
                 if retries < max_retries:
                     wait_time = min(5 * retries, 30)
                     print(f"リクエストエラー - {wait_time}秒後に再試行します ({retries}/{max_retries})...")
+                    retry_info["wait_time"] = wait_time
                     time.sleep(wait_time)
                 else:
                     print("最大再試行回数に達しました")
+                    request_info["final_status"] = "request_exception_failure"
+                    request_info["duration"] = time.time() - start_time
+                    print(f"詳細情報: {json.dumps(request_info, default=str)}")
                     return None
                     
             except json.JSONDecodeError as e:
                 print(f"JSONエラー: {e}")
+                retry_info["error"] = "json_decode"
+                retry_info["error_details"] = str(e)
+                request_info["retry_history"].append(retry_info)
+                
                 retries += 1
                 if retries < max_retries:
                     wait_time = 2 ** retries
                     print(f"JSON処理エラー - {wait_time}秒後に再試行します ({retries}/{max_retries})...")
+                    retry_info["wait_time"] = wait_time
                     time.sleep(wait_time)
                 else:
                     print("最大再試行回数に達しました")
+                    request_info["final_status"] = "json_decode_failure"
+                    request_info["duration"] = time.time() - start_time
+                    print(f"詳細情報: {json.dumps(request_info, default=str)}")
                     return None
                     
             except Exception as e:
                 print(f"APIリクエスト中のエラー: {e}")
                 print(traceback.format_exc())
+                retry_info["error"] = "general_exception"
+                retry_info["error_details"] = str(e)
+                retry_info["traceback"] = traceback.format_exc()
+                request_info["retry_history"].append(retry_info)
+                
                 retries += 1
                 if retries < max_retries:
                     wait_time = 2 ** retries
                     print(f"未知のエラー - {wait_time}秒後に再試行します ({retries}/{max_retries})...")
+                    retry_info["wait_time"] = wait_time
                     time.sleep(wait_time)
                 else:
                     print("最大再試行回数に達しました")
+                    request_info["final_status"] = "unknown_failure"
+                    request_info["duration"] = time.time() - start_time
+                    print(f"詳細情報: {json.dumps(request_info, default=str)}")
                     return None
         
         print(f"リクエストに失敗しました: {method} {url}")
+        request_info["final_status"] = "max_retries_exceeded"
+        request_info["duration"] = time.time() - start_time
+        print(f"詳細情報: {json.dumps(request_info, default=str)}")
         return None
     
     def _test_api_connection_rest(self):

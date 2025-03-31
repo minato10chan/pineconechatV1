@@ -5,6 +5,7 @@ import os
 from dotenv import load_dotenv
 import traceback
 import time
+import requests
 
 # 環境変数を確実にロード
 load_dotenv(override=True)
@@ -193,22 +194,57 @@ def register_document(uploaded_file, additional_metadata=None):
     upload_timeout = 120  # 2分
     start_time = time.time()
     
+    # デバッグモードを有効化
+    debug_container = st.expander("デバッグ情報", expanded=False)
+    with debug_container:
+        st.write("### アップロード処理のデバッグ情報")
+        st.write(f"処理開始時刻: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        st.write(f"タイムアウト設定: {upload_timeout}秒")
+        
+        # 接続状態のログ
+        st.write("#### 初期接続状態")
+        st.write(f"vector_store_available: {vector_store_available}")
+        if vector_store:
+            st.write(f"vector_store.available: {getattr(vector_store, 'available', 'undefined')}")
+            st.write(f"vector_store.temporary_failure: {getattr(vector_store, 'temporary_failure', False)}")
+            if hasattr(vector_store, 'pinecone_client'):
+                client = vector_store.pinecone_client
+                st.write(f"Pineconeクライアント状態: {getattr(client, 'available', 'undefined')}")
+                st.write(f"Pineconeクライアント一時的障害モード: {getattr(client, 'temporary_failure', False)}")
+    
     # ベクトルデータベース接続状態を再確認
     if not vector_store_available and vector_store and hasattr(vector_store, 'pinecone_client'):
         client = vector_store.pinecone_client
         try:
             # REST API接続を試行
             if hasattr(client, '_check_rest_api_connection'):
-                if client._check_rest_api_connection():
+                with debug_container:
+                    st.write("#### REST API接続テスト")
+                
+                connection_result = client._check_rest_api_connection()
+                
+                with debug_container:
+                    st.write(f"REST API接続テスト結果: {connection_result}")
+                
+                if connection_result:
                     print("ファイルアップロード前: REST API接続が確認できました。強制的に利用可能に設定します。")
                     vector_store_available = True
                     vector_store.available = True
                     if hasattr(client, 'available'):
                         client.available = True
                     print(f"接続状態の強制更新後: vector_store_available = {vector_store_available}")
+                    
+                    with debug_container:
+                        st.write("#### 接続状態更新")
+                        st.write(f"接続成功により状態を更新: vector_store_available = {vector_store_available}")
         except Exception as e:
             print(f"REST API接続の確認中にエラー: {e}")
             print(f"エラーの詳細: {traceback.format_exc()}")
+            
+            with debug_container:
+                st.write("#### REST API接続エラー")
+                st.write(f"エラー: {str(e)}")
+                st.code(traceback.format_exc(), language="python")
     
     # 接続状態を確認して詳細な情報を出力
     print(f"ファイルアップロード処理開始: vector_store_available = {vector_store_available}")
@@ -228,11 +264,53 @@ def register_document(uploaded_file, additional_metadata=None):
             # vector_storeの属性を出力
             st.write(f"vector_store.available: {getattr(vector_store, 'available', 'undefined')}")
             
+            # Pineconeクライアントの詳細情報を表示
+            if hasattr(vector_store, 'pinecone_client'):
+                client = vector_store.pinecone_client
+                st.write("### Pineconeクライアント情報")
+                st.write(f"API環境: {getattr(client, 'environment', 'unknown')}")
+                st.write(f"インデックス名: {getattr(client, 'index_name', 'unknown')}")
+                st.write(f"Streamlit Cloud環境: {getattr(client, 'is_streamlit_cloud', False)}")
+                st.write(f"一時的障害モード: {getattr(client, 'temporary_failure', False)}")
+                st.write(f"失敗試行回数: {getattr(client, 'failed_attempts', 0)}")
+                
+                if hasattr(client, 'initialization_error'):
+                    st.write("### 初期化エラー")
+                    st.error(client.initialization_error)
+            
             # 接続テスト
             try:
                 if hasattr(vector_store, 'pinecone_client') and hasattr(vector_store.pinecone_client, '_check_rest_api_connection'):
-                    rest_result = vector_store.pinecone_client._check_rest_api_connection()
+                    with st.spinner("REST API接続をテスト中..."):
+                        rest_result = vector_store.pinecone_client._check_rest_api_connection()
                     st.write(f"REST API接続テスト: {'成功' if rest_result else '失敗'}")
+                    
+                    # レスポンスの詳細を表示
+                    try:
+                        # インデックス一覧を取得
+                        api_url = "https://api.pinecone.io/indexes"
+                        with st.spinner("インデックス情報を取得中..."):
+                            response = vector_store.pinecone_client._make_request(
+                                method="GET", 
+                                url=api_url, 
+                                max_retries=1, 
+                                timeout=10
+                            )
+                        
+                        if response:
+                            st.write(f"API応答ステータス: {response.status_code}")
+                            if response.status_code == 200:
+                                st.success("インデックス一覧の取得に成功しました")
+                                try:
+                                    index_list = response.json()
+                                    st.write(f"利用可能なインデックス: {index_list}")
+                                except Exception as e:
+                                    st.write(f"JSONデコードエラー: {str(e)}")
+                            else:
+                                st.error(f"インデックス一覧の取得に失敗しました: {response.status_code}")
+                                st.code(response.text, language="text")
+                    except Exception as e:
+                        st.write(f"インデックス情報の取得中にエラー: {str(e)}")
                     
                     # 接続が成功している場合は再試行ボタンを表示
                     if rest_result and st.button("REST APIで再試行"):
@@ -245,6 +323,69 @@ def register_document(uploaded_file, additional_metadata=None):
                         st.rerun()
             except Exception as e:
                 st.write(f"REST API接続テスト中にエラー: {str(e)}")
+                st.code(traceback.format_exc(), language="python")
+
+        # ネットワーク接続のテスト
+        try:
+            with st.spinner("インターネット接続をテスト中..."):
+                internet_test_urls = ["https://8.8.8.8", "https://1.1.1.1", "https://www.google.com"]
+                for url in internet_test_urls:
+                    try:
+                        response = requests.get(url, timeout=5)
+                        st.success(f"{url} に接続成功: {response.status_code}")
+                        break
+                    except Exception as e:
+                        st.error(f"{url} への接続に失敗: {str(e)}")
+        except Exception as e:
+            st.error(f"インターネット接続テスト中にエラー: {str(e)}")
+                
+        # 緊急モードへの切り替えボタン
+        if vector_store and st.button("緊急オフラインモードに切り替え"):
+            try:
+                if hasattr(vector_store, 'pinecone_client'):
+                    vector_store.temporary_failure = True
+                    vector_store.is_streamlit_cloud = True
+                    
+                    if hasattr(vector_store.pinecone_client, 'temporary_failure'):
+                        vector_store.pinecone_client.temporary_failure = True
+                        vector_store.pinecone_client.is_streamlit_cloud = True
+                        vector_store.pinecone_client.failed_attempts = 3
+                    
+                    st.success("緊急オフラインモードに切り替えました。ページを再読み込みします。")
+                    time.sleep(1)
+                    st.rerun()
+            except Exception as e:
+                st.error(f"緊急モードへの切り替え中にエラーが発生しました: {e}")
+                st.code(traceback.format_exc(), language="python")
+        
+        # リトライボタンを提供
+        if st.button("接続を再試行"):
+            with st.spinner("Pineconeへの接続を再試行しています..."):
+                try:
+                    # セッション状態をクリア
+                    if 'vector_store' in st.session_state:
+                        del st.session_state.vector_store
+                    if 'vector_store_initialized' in st.session_state:
+                        del st.session_state.vector_store_initialized
+                    
+                    # 再初期化
+                    initialize_vector_store()
+                    
+                    # 接続状態を確認
+                    if vector_store_available:
+                        st.success("接続に成功しました！ページを再読み込みします。")
+                        st.rerun()
+                    else:
+                        st.error("接続の再試行は完了しましたが、まだ使用できない状態です。")
+                        st.write("デバッグ情報:")
+                        st.write(f"vector_store_available: {vector_store_available}")
+                        if vector_store:
+                            st.write(f"vector_store.available: {getattr(vector_store, 'available', 'undefined')}")
+                except Exception as e:
+                    st.error(f"接続の再試行に失敗しました: {e}")
+                    st.error("エラーの詳細:")
+                    st.exception(e)
+        
         return
     
     if uploaded_file is not None:
@@ -262,11 +403,21 @@ def register_document(uploaded_file, additional_metadata=None):
             progress_bar.progress(10)
             status_text.text("ファイルのエンコーディングを検出中...")
             
+            with debug_container:
+                st.write("#### ファイル情報")
+                st.write(f"ファイル名: {uploaded_file.name}")
+                st.write(f"ファイルサイズ: {len(file_bytes)} バイト")
+            
             # 異なるエンコーディングを試す
             for encoding in encodings_to_try:
                 try:
                     content = file_bytes.decode(encoding)
                     st.success(f"ファイルを {encoding} エンコーディングで読み込みました")
+                    
+                    with debug_container:
+                        st.write(f"エンコーディング: {encoding}")
+                        st.write(f"テキスト長: {len(content)} 文字")
+                    
                     break
                 except UnicodeDecodeError:
                     continue
@@ -319,6 +470,11 @@ def register_document(uploaded_file, additional_metadata=None):
             # セッション状態にドキュメントを保存
             st.session_state.documents.extend(documents)
 
+            with debug_container:
+                st.write("#### 分割情報")
+                st.write(f"分割されたドキュメント数: {len(documents)}")
+                st.write(f"平均チャンク長: {sum([len(doc.page_content) for doc in documents]) / len(documents) if documents else 0:.1f} 文字")
+
             progress_bar.progress(40)
             status_text.text("ベクトルIDを作成中...")
             
@@ -341,8 +497,15 @@ def register_document(uploaded_file, additional_metadata=None):
             status_text.text(f"ドキュメントをデータベースに登録中... (0/{len(documents)}件)")
             
             # ドキュメントの追加（UPSERT）を小さなバッチに分割して実行
-            batch_size = 10  # 一度に処理するドキュメント数
+            batch_size = 5  # 一度に処理するドキュメント数を減らす
             success_count = 0
+            
+            # デバッグ情報に進捗を表示
+            with debug_container:
+                st.write("#### ベクトルデータベース処理")
+                upload_status = st.empty()
+                upload_details = st.empty()
+                upload_status.text(f"処理開始: 合計 {len(documents)} 件を {batch_size} 件ずつバッチ処理")
             
             for batch_start in range(0, len(documents), batch_size):
                 # タイムアウトチェック
@@ -354,9 +517,49 @@ def register_document(uploaded_file, additional_metadata=None):
                 batch_docs = documents[batch_start:batch_end]
                 batch_ids = original_ids[batch_start:batch_end]
                 
+                # デバッグ情報にバッチ詳細を表示
+                with debug_container:
+                    upload_details.text(f"バッチ {batch_start//batch_size + 1}/{(len(documents) + batch_size - 1)//batch_size}: {batch_start+1}～{batch_end}/{len(documents)}件を処理中")
+                
                 try:
                     # バッチをアップロード
-                    result = vector_store.upsert_documents(documents=batch_docs, ids=batch_ids)
+                    vector_store_method = None
+                    if hasattr(vector_store, 'upsert_documents'):
+                        vector_store_method = "upsert_documents"
+                    elif hasattr(vector_store, 'add_documents'):
+                        vector_store_method = "add_documents"
+                    
+                    with debug_container:
+                        st.write(f"使用メソッド: {vector_store_method}")
+                        current_time = time.time()
+                        st.write(f"バッチ処理開始時刻: {datetime.datetime.fromtimestamp(current_time).strftime('%H:%M:%S.%f')[:-3]}")
+                    
+                    # ベクトルストアの使用可能状態を再確認
+                    if not vector_store_available and vector_store:
+                        with debug_container:
+                            st.warning("ベクトルストアが使用不可の状態でアップロードを試行")
+                            st.write(f"vector_store.available: {getattr(vector_store, 'available', 'undefined')}")
+                            if hasattr(vector_store, 'pinecone_client'):
+                                st.write(f"client.available: {getattr(vector_store.pinecone_client, 'available', 'undefined')}")
+                    
+                    # バッチをアップロード（例外をキャッチして詳細表示）
+                    result = False
+                    try:
+                        if vector_store_method == "upsert_documents":
+                            result = vector_store.upsert_documents(documents=batch_docs, ids=batch_ids)
+                        elif vector_store_method == "add_documents":
+                            result = vector_store.add_documents(documents=batch_docs, ids=batch_ids)
+                    except Exception as upload_error:
+                        with debug_container:
+                            st.error(f"アップロードエラー: {str(upload_error)}")
+                            st.code(traceback.format_exc(), language="python")
+                        raise
+                    
+                    with debug_container:
+                        end_time = time.time()
+                        st.write(f"バッチ処理終了時刻: {datetime.datetime.fromtimestamp(end_time).strftime('%H:%M:%S.%f')[:-3]}")
+                        st.write(f"処理時間: {end_time - current_time:.2f}秒")
+                        st.write(f"結果: {result}")
                     
                     if result:
                         success_count += len(batch_docs)
@@ -365,12 +568,44 @@ def register_document(uploaded_file, additional_metadata=None):
                         progress_bar.progress(progress_percentage)
                         status_text.text(f"ドキュメントをデータベースに登録中... ({success_count}/{len(documents)}件)")
                     else:
+                        with debug_container:
+                            st.warning(f"バッチ {batch_start//batch_size + 1} の登録に失敗しました（falseが返されました）")
                         st.warning(f"バッチ {batch_start//batch_size + 1} の登録に問題がありました。")
                 except Exception as batch_error:
                     st.error(f"バッチ {batch_start//batch_size + 1} の登録中にエラーが発生しました: {str(batch_error)}")
                     print(f"Batch upsert error: {str(batch_error)}")
                     print(f"Error type: {type(batch_error)}")
                     print(f"Error traceback: {traceback.format_exc()}")
+                    
+                    # より詳細なデバッグ情報
+                    with debug_container:
+                        st.write("#### バッチ処理エラー")
+                        st.error(f"エラータイプ: {type(batch_error).__name__}")
+                        st.error(f"エラーメッセージ: {str(batch_error)}")
+                        st.code(traceback.format_exc(), language="python")
+                        
+                        # ベクトルストアの状態を確認
+                        st.write("#### エラー後のベクトルストア状態")
+                        st.write(f"vector_store_available: {vector_store_available}")
+                        if vector_store:
+                            st.write(f"vector_store.available: {getattr(vector_store, 'available', 'undefined')}")
+                            if hasattr(vector_store, 'pinecone_client'):
+                                client = vector_store.pinecone_client
+                                st.write(f"client.available: {getattr(client, 'available', 'undefined')}")
+                        
+                        # REST API接続を再テスト
+                        try:
+                            if vector_store and hasattr(vector_store, 'pinecone_client') and \
+                               hasattr(vector_store.pinecone_client, '_check_rest_api_connection'):
+                                st.write("REST API接続を再テスト中...")
+                                api_status = vector_store.pinecone_client._check_rest_api_connection()
+                                st.write(f"REST API接続テスト結果: {api_status}")
+                        except Exception as test_error:
+                            st.write(f"REST API接続テスト中にエラー: {str(test_error)}")
+            
+            # 最終進捗状況の更新
+            with debug_container:
+                upload_status.text(f"処理完了: {success_count}/{len(documents)}件が成功")
             
             progress_bar.progress(100)
             
@@ -378,7 +613,7 @@ def register_document(uploaded_file, additional_metadata=None):
                 st.success(f"{uploaded_file.name} をデータベースに登録しました。")
                 st.info(f"{success_count}/{len(documents)}件のチャンクが正常に登録されました")
             else:
-                st.error(f"{uploaded_file.name} の登録に失敗しました。詳細はログを確認してください。")
+                st.error(f"{uploaded_file.name} の登録に失敗しました。詳細はデバッグ情報を確認してください。")
             
             # クリーンアップ
             progress_bar.empty()
@@ -392,6 +627,14 @@ def register_document(uploaded_file, additional_metadata=None):
             print(f"Document processing error details: {str(e)}")
             print(f"Error type: {type(e)}")
             print(f"Error traceback: {traceback.format_exc()}")
+            
+            # デバッグ情報に詳細を追加
+            with debug_container:
+                st.write("#### 致命的なエラー")
+                st.error(f"エラータイプ: {type(e).__name__}")
+                st.error(f"エラーメッセージ: {str(e)}")
+                st.code(traceback.format_exc(), language="python")
+            
             # クリーンアップ
             if 'progress_bar' in locals():
                 progress_bar.empty()
