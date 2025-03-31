@@ -892,3 +892,120 @@ logger.info(f"Pineconeリクエストタイムアウトを {os.environ.get('PINE
 logger.info("システム情報:")
 logger.info(f"- Python バージョン: {platform.python_version()}")
 logger.info(f"- プラットフォーム: {platform.platform()}")
+
+def process_uploaded_file(uploaded_file):
+    """アップロードされたファイルを処理する"""
+    try:
+        logger.info(f"ファイル処理開始: {uploaded_file.name}")
+        logger.info(f"ファイルタイプ: {uploaded_file.type}")
+        logger.info(f"ファイルサイズ: {uploaded_file.size} bytes")
+
+        # ファイルの内容を読み込む
+        content = uploaded_file.read()
+        logger.info(f"ファイル内容の読み込み完了: {len(content)} bytes")
+
+        # テキストに変換
+        text = content.decode('utf-8')
+        logger.info(f"テキスト変換完了: {len(text)} 文字")
+
+        # チャンクに分割
+        chunks = split_text(text)
+        logger.info(f"テキスト分割完了: {len(chunks)} チャンク")
+
+        # ベクトルストアに保存
+        if vector_store and vector_store.available:
+            logger.info("ベクトルストアへの保存を開始")
+            for i, chunk in enumerate(chunks, 1):
+                try:
+                    vector_store.add_texts([chunk])
+                    logger.info(f"チャンク {i}/{len(chunks)} の保存完了")
+                except Exception as e:
+                    logger.error(f"チャンク {i}/{len(chunks)} の保存中にエラー: {str(e)}")
+                    raise
+            logger.info("すべてのチャンクの保存が完了")
+        else:
+            logger.warning("ベクトルストアが利用できないため、メモリに保存")
+            if 'memory_store' not in st.session_state:
+                st.session_state.memory_store = []
+            st.session_state.memory_store.extend(chunks)
+            logger.info(f"メモリに {len(chunks)} チャンクを保存")
+
+        return True
+    except Exception as e:
+        logger.error(f"ファイル処理中にエラーが発生: {str(e)}")
+        logger.error(f"エラーの詳細: {traceback.format_exc()}")
+        return False
+
+def main():
+    """メインアプリケーション"""
+    try:
+        # ログ出力の開始
+        logger.info("アプリケーション起動")
+        logger.info("システム情報:")
+        logger.info(f"- Python バージョン: {sys.version}")
+        logger.info(f"- プラットフォーム: {platform.platform()}")
+
+        # 初期化処理
+        initialize_session_state()
+        logger.info("セッション状態の初期化完了")
+
+        # ベクトルストアの初期化
+        if not st.session_state.get('vector_store_initialized'):
+            logger.info("最初のベクトルストア初期化を実行します...")
+            initialize_vector_store()
+            logger.info("ベクトルストアの初期化完了")
+
+        # タイトルと説明
+        st.title("📚 ドキュメント検索チャット")
+        st.markdown("""
+        ### 使い方
+        1. ドキュメントをアップロード
+        2. 質問を入力
+        3. 関連する情報を基に回答を生成
+        """)
+
+        # ファイルアップロード
+        uploaded_file = st.file_uploader("ドキュメントをアップロード", type=['txt', 'pdf', 'doc', 'docx'])
+        if uploaded_file:
+            logger.info(f"ファイルアップロード検知: {uploaded_file.name}")
+            if process_uploaded_file(uploaded_file):
+                st.success("ファイルの処理が完了しました！")
+                logger.info("ファイル処理が正常に完了")
+            else:
+                st.error("ファイルの処理中にエラーが発生しました。")
+                logger.error("ファイル処理が失敗")
+
+        # チャットインターフェース
+        if "messages" not in st.session_state:
+            st.session_state.messages = []
+            logger.info("チャット履歴を初期化")
+
+        for message in st.session_state.messages:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
+                logger.info(f"メッセージ表示: {message['role']}")
+
+        if prompt := st.chat_input("質問を入力してください"):
+            logger.info(f"新しい質問を受信: {prompt}")
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            with st.chat_message("user"):
+                st.markdown(prompt)
+
+            with st.chat_message("assistant"):
+                try:
+                    response = get_response(prompt)
+                    st.markdown(response)
+                    logger.info("アシスタントの応答を生成")
+                except Exception as e:
+                    error_message = f"エラーが発生しました: {str(e)}"
+                    st.error(error_message)
+                    logger.error(f"応答生成中にエラー: {str(e)}")
+                    logger.error(f"エラーの詳細: {traceback.format_exc()}")
+
+            st.session_state.messages.append({"role": "assistant", "content": response})
+            logger.info("チャット履歴を更新")
+
+    except Exception as e:
+        logger.error(f"アプリケーション実行中にエラー: {str(e)}")
+        logger.error(f"エラーの詳細: {traceback.format_exc()}")
+        st.error("アプリケーションでエラーが発生しました。")
