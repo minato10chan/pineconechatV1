@@ -67,9 +67,11 @@ pinecone_api_key = os.environ.get("PINECONE_API_KEY")
 pinecone_env = os.environ.get("PINECONE_ENVIRONMENT")
 pinecone_index = os.environ.get("PINECONE_INDEX")
 
-logger.info(f"環境変数: PINECONE_API_KEY={'設定済み' if pinecone_api_key else '未設定'}")
-logger.info(f"環境変数: PINECONE_ENVIRONMENT={pinecone_env}")
-logger.info(f"環境変数: PINECONE_INDEX={pinecone_index}")
+# 環境変数の確認（1回だけ出力）
+logger.info("環境変数の確認:")
+logger.info(f"- PINECONE_API_KEY: {'設定済み' if pinecone_api_key else '未設定'}")
+logger.info(f"- PINECONE_ENVIRONMENT: {pinecone_env}")
+logger.info(f"- PINECONE_INDEX: {pinecone_index}")
 
 # Pinecone SDK接続テストを削除（REST APIのみ使用）
 
@@ -118,78 +120,34 @@ def initialize_vector_store():
     
     try:
         if vector_store is None:
-            logger.info("最初のベクトルストア初期化を実行します...")
+            logger.info("ベクトルストアの初期化を開始...")
             from src.pinecone_vector_store import PineconeVectorStore
             vector_store = PineconeVectorStore()
             
             # 使用可能かどうかを確認
             vector_store_available = getattr(vector_store, 'available', False)
-            logger.info(f"PineconeベースのVectorStoreを初期化しました。状態: {'利用可能' if vector_store_available else '利用不可'}")
+            logger.info(f"ベクトルストアの初期化完了: {'利用可能' if vector_store_available else '利用不可'}")
             
-            # 接続状態の詳細を表示
             if not vector_store_available:
-                logger.info("\n接続状態の詳細:")
-                logger.info(f"- vector_store_available: {vector_store_available}")
+                logger.warning("ベクトルストアの接続に失敗しました")
                 if hasattr(vector_store, 'pinecone_client'):
                     client = vector_store.pinecone_client
-                    logger.info(f"- pinecone_client_available: {getattr(client, 'available', False)}")
-                    logger.info(f"- initialization_error: {getattr(client, 'initialization_error', 'なし')}")
-                    logger.info(f"- temporary_failure: {getattr(client, 'temporary_failure', False)}")
-                    logger.info(f"- failed_attempts: {getattr(client, 'failed_attempts', 0)}")
-                    logger.info(f"- is_streamlit_cloud: {getattr(client, 'is_streamlit_cloud', False)}")
-                
-                # エラーメッセージを構築
-                error_msg = "ベクトルデータベースの接続でエラーが発生しました。\n\n"
-                error_msg += "デバッグ情報:\n"
-                error_msg += f"- vector_store_available: {vector_store_available}\n"
-                
-                if hasattr(vector_store, 'pinecone_client'):
-                    client = vector_store.pinecone_client
-                    error_msg += f"- pinecone_client_available: {getattr(client, 'available', False)}\n"
-                    error_msg += f"- initialization_error: {getattr(client, 'initialization_error', 'なし')}\n"
-                    error_msg += f"- temporary_failure: {getattr(client, 'temporary_failure', False)}\n"
-                    error_msg += f"- failed_attempts: {getattr(client, 'failed_attempts', 0)}\n"
-                    error_msg += f"- is_streamlit_cloud: {getattr(client, 'is_streamlit_cloud', False)}\n"
-                
-                error_msg += "\n接続問題を解決するオプション:\n"
-                error_msg += "1. インターネット接続が安定しているか確認してください\n"
-                error_msg += "2. Pinecone APIキーが正しく設定されているか確認してください\n"
-                error_msg += "3. インデックスが存在し、アクセス可能か確認してください\n"
-                error_msg += "4. 問題が解決しない場合は「緊急オフラインモード」を使用すると、一時的にメモリ内ストレージでアプリを使用できます\n"
-                
-                st.error(error_msg)
-                return False
+                    logger.warning(f"- 初期化エラー: {getattr(client, 'initialization_error', 'なし')}")
+                    logger.warning(f"- 一時的障害: {getattr(client, 'temporary_failure', False)}")
+                    logger.warning(f"- 失敗回数: {getattr(client, 'failed_attempts', 0)}")
             
-            logger.info("VectorStore initialization completed. Status: Available")
-            logger.info(f"グローバル変数の最終状態: vector_store_available = {vector_store_available}")
-            logger.info(f"vector_store.available = {vector_store.available}")
-            return True
+            return vector_store_available
             
     except Exception as e:
-        logger.error(f"VectorStoreの初期化中にエラー: {e}")
+        logger.error(f"ベクトルストアの初期化中にエラー: {e}")
         logger.error(traceback.format_exc())
         vector_store_available = False
         vector_store = None
-        
-        # エラーメッセージを構築
-        error_msg = "ベクトルデータベースの初期化中にエラーが発生しました。\n\n"
-        error_msg += f"エラーの詳細: {str(e)}\n\n"
-        error_msg += "デバッグ情報:\n"
-        error_msg += f"- vector_store_available: {vector_store_available}\n"
-        error_msg += f"- error_type: {type(e).__name__}\n"
-        error_msg += f"- error_message: {str(e)}\n\n"
-        error_msg += "接続問題を解決するオプション:\n"
-        error_msg += "1. インターネット接続が安定しているか確認してください\n"
-        error_msg += "2. Pinecone APIキーが正しく設定されているか確認してください\n"
-        error_msg += "3. インデックスが存在し、アクセス可能か確認してください\n"
-        error_msg += "4. 問題が解決しない場合は「緊急オフラインモード」を使用すると、一時的にメモリ内ストレージでアプリを使用できます\n"
-        
-        st.error(error_msg)
         return False
 
 # 最初の1回だけ初期化を試みる (アプリケーション起動時)
 if 'vector_store_initialized' not in st.session_state:
-    logger.info("最初のベクトルストア初期化を実行します...")
+    logger.info("アプリケーション起動時の初期化を開始...")
     
     # デフォルトでは接続チェックを高速にするためのフラグ
     st.session_state.connection_check_completed = False
@@ -206,10 +164,10 @@ if 'vector_store_initialized' not in st.session_state:
             debug_mode = st.checkbox("デバッグモードを有効化", value=True)
             if debug_mode:
                 st.write("### アップロード状態")
-                upload_status = st.empty()  # このコンポーネントを利用して状態を更新
+                upload_status = st.empty()
         
         # ベクトルストア初期化
-        vector_store = initialize_vector_store()
+        initialize_vector_store()
         
         # 接続の状態を記録
         st.session_state.connection_check_completed = True
@@ -225,6 +183,7 @@ if 'vector_store_initialized' not in st.session_state:
                         client = vector_store.pinecone_client
                         st.write(f"client.available = {getattr(client, 'available', 'undefined')}")
                         st.write(f"client.temporary_failure = {getattr(client, 'temporary_failure', False)}")
+    
     except Exception as e:
         logger.error(f"初期化中にエラーが発生: {e}")
         logger.error(traceback.format_exc())
@@ -234,6 +193,7 @@ if 'vector_store_initialized' not in st.session_state:
                 st.code(traceback.format_exc(), language="python")
     
     st.session_state.vector_store_initialized = True
+    logger.info("アプリケーションの初期化が完了しました")
 
 def register_document(uploaded_file, additional_metadata=None):
     """
