@@ -329,6 +329,19 @@ def manage_db():
     # グローバル変数の宣言を最初に移動
     global vector_store, vector_store_available
 
+    logger.info("="*50)
+    logger.info(f"ベクトルDB管理ページを開く: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info(f"現在の状態:")
+    logger.info(f"- vector_store_available: {vector_store_available}")
+    if vector_store:
+        logger.info(f"- vector_store.available: {getattr(vector_store, 'available', 'undefined')}")
+        logger.info(f"- 緊急モード: {getattr(vector_store, 'temporary_failure', False)}")
+        if hasattr(vector_store, 'pinecone_client'):
+            client = vector_store.pinecone_client
+            logger.info(f"- Pineconeクライアント状態: {getattr(client, 'available', 'undefined')}")
+            logger.info(f"- 一時的障害モード: {getattr(client, 'temporary_failure', False)}")
+    logger.info("="*50)
+
     st.header("ベクトルデータベース管理")
 
     # ページロード時に接続状態を確認
@@ -336,14 +349,17 @@ def manage_db():
         if vector_store and hasattr(vector_store, 'pinecone_client'):
             client = vector_store.pinecone_client
             if hasattr(client, '_check_rest_api_connection'):
+                logger.info("Pinecone接続状態を確認中...")
                 with st.spinner("Pinecone接続状態を確認中..."):
                     api_test_result = client._check_rest_api_connection()
                     logger.info(f"Pinecone REST API接続テスト結果: {api_test_result}")
     except Exception as e:
         logger.error(f"ページロード時の接続確認エラー: {e}")
+        logger.error(traceback.format_exc())
 
     # デバッグモードの表示
     if 'debug_mode' in st.session_state and st.session_state.debug_mode:
+        logger.info("デバッグモードが有効です")
         st.write("### 現在のデバッグ情報")
         st.write(f"vector_store_available = {vector_store_available}")
         if vector_store:
@@ -355,179 +371,7 @@ def manage_db():
                 st.write(f"client.temporary_failure = {getattr(client, 'temporary_failure', False)}")
                 st.write(f"client.is_streamlit_cloud = {getattr(client, 'is_streamlit_cloud', False)}")
                 st.write(f"client.failed_attempts = {getattr(client, 'failed_attempts', 0)}")
-                
-                # APIリクエスト結果を表示
-                if hasattr(client, '_make_request'):
-                    try:
-                        with st.expander("Pinecone API接続テスト", expanded=False):
-                            with st.spinner("API接続テスト実行中..."):
-                                api_url = "https://api.pinecone.io/indexes"
-                                response = client._make_request(
-                                    method="GET", 
-                                    url=api_url, 
-                                    max_retries=1, 
-                                    timeout=5
-                                )
-                                if response:
-                                    st.success(f"API応答: ステータスコード {response.status_code}")
-                                    if response.status_code == 200:
-                                        try:
-                                            st.json(response.json())
-                                        except:
-                                            st.text(response.text[:500])
-                                else:
-                                    st.error("API接続テスト失敗: レスポンスなし")
-                    except Exception as e:
-                        st.error(f"API接続テストエラー: {str(e)}")
 
-    # 緊急モードの検出
-    emergency_mode = False
-    if vector_store:
-        emergency_mode = getattr(vector_store, 'temporary_failure', False) and getattr(vector_store, 'is_streamlit_cloud', False)
-        if emergency_mode:
-            st.warning("⚠️ 緊急オフラインモードで動作中です。Pineconeへの接続は一時的に無効化されています。メモリ内ストレージを使用します。")
-            # 緊急モード時は制限された機能を表示
-            offline_storage = getattr(vector_store, 'offline_storage', None)
-            if offline_storage:
-                item_count = len(offline_storage.get("ids", []))
-                st.info(f"メモリ内ストレージには現在 {item_count} 件のベクトルが保存されています")
-                
-                # 緊急モードを解除するボタン
-                if st.button("緊急モードを解除"):
-                    try:
-                        vector_store.temporary_failure = False
-                        if hasattr(vector_store, 'pinecone_client'):
-                            vector_store.pinecone_client.temporary_failure = False
-                            vector_store.pinecone_client.failed_attempts = 0
-                        st.success("緊急モードを解除しました。ページを再読み込みします。")
-                        time.sleep(1)
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"緊急モード解除中にエラーが発生しました: {e}")
-            
-            # 緊急モードでもアップロード機能を提供する
-            st.subheader("ドキュメントを緊急モードで登録")
-            # （以下、アップロード用のUIコードをシンプルに提供）
-            uploaded_file = st.file_uploader('テキストをアップロードしてください', type='txt', key="emergency_uploader")
-            if uploaded_file and st.button("緊急モードで登録"):
-                with st.spinner('メモリ内ストレージに登録中...'):
-                    register_document(uploaded_file, additional_metadata={"emergency_mode": True})
-
-    if not vector_store_available and not emergency_mode:
-        error_message = "ベクトルデータベースの接続でエラーが発生しました。現在、ベクトルデータベースは使用できません。"
-        
-        # より詳細なエラー情報を表示
-        if hasattr(vector_store, 'pinecone_client') and vector_store.pinecone_client:
-            client = vector_store.pinecone_client
-            error_message += "\n\n接続状態の詳細:"
-            
-            # クライアントの利用可能性
-            client_available = getattr(client, 'available', False)
-            error_message += f"\n- Pineconeクライアント: {'利用可能' if client_available else '利用不可'}"
-            
-            # 初期化エラー
-            if hasattr(client, 'initialization_error'):
-                error_message += f"\n- 初期化エラー: {client.initialization_error}"
-            
-            # REST API接続状態
-            if hasattr(client, '_check_rest_api_connection'):
-                api_available = client._check_rest_api_connection()
-                error_message += f"\n- REST API接続: {'成功' if api_available else '失敗'}"
-            
-            # インデックス情報
-            if hasattr(client, 'index_name'):
-                error_message += f"\n- インデックス名: {client.index_name}"
-        
-        st.error(error_message)
-        
-        # デバッグ情報を追加
-        st.write("## デバッグ情報")
-        st.write(f"vector_store_available: {vector_store_available}")
-        if vector_store:
-            st.write("vector_storeオブジェクト情報:")
-            st.write(f"- 型: {type(vector_store)}")
-            st.write(f"- 利用可能: {getattr(vector_store, 'available', 'undefined')}")
-            if hasattr(vector_store, 'pinecone_client'):
-                client = vector_store.pinecone_client
-                st.write("Pineconeクライアント情報:")
-                st.write(f"- 型: {type(client)}")
-                st.write(f"- 利用可能: {getattr(client, 'available', 'undefined')}")
-                st.write(f"- REST API接続: {hasattr(client, '_check_rest_api_connection')}")
-                # REST API接続をテストして結果を表示
-                if hasattr(client, '_check_rest_api_connection'):
-                    try:
-                        rest_api_status = client._check_rest_api_connection()
-                        st.write(f"- REST API接続テスト結果: {rest_api_status}")
-                    except Exception as e:
-                        st.write(f"- REST API接続テスト中にエラー: {str(e)}")
-                if hasattr(client, 'initialization_error'):
-                    st.write(f"- 初期化エラー: {client.initialization_error}")
-        
-        # 緊急モードへの切り替えボタン
-        st.subheader("接続問題を解決するオプション")
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            if vector_store and st.button("緊急オフラインモードに切り替え"):
-                try:
-                    if hasattr(vector_store, 'pinecone_client'):
-                        vector_store.temporary_failure = True
-                        vector_store.is_streamlit_cloud = True
-                        
-                        if hasattr(vector_store.pinecone_client, 'temporary_failure'):
-                            vector_store.pinecone_client.temporary_failure = True
-                            vector_store.pinecone_client.is_streamlit_cloud = True
-                            vector_store.pinecone_client.failed_attempts = 3
-                        
-                        st.success("緊急オフラインモードに切り替えました。ページを再読み込みします。")
-                        time.sleep(1)
-                        st.rerun()
-                except Exception as e:
-                    st.error(f"緊急モードへの切り替え中にエラーが発生しました: {e}")
-        
-        # リトライボタンを提供
-        with col2:
-            if st.button("接続を再試行"):
-                with st.spinner("Pineconeへの接続を再試行しています..."):
-                    try:
-                        # セッション状態をクリア
-                        if 'vector_store' in st.session_state:
-                            del st.session_state.vector_store
-                        if 'vector_store_initialized' in st.session_state:
-                            del st.session_state.vector_store_initialized
-                        
-                        # 再初期化
-                        initialize_vector_store()
-                        
-                        # 接続状態を確認
-                        if vector_store_available:
-                            st.success("接続に成功しました！ページを再読み込みします。")
-                            st.rerun()
-                        else:
-                            st.error("接続の再試行は完了しましたが、まだ使用できない状態です。")
-                            st.write("デバッグ情報:")
-                            st.write(f"vector_store_available: {vector_store_available}")
-                            if vector_store:
-                                st.write(f"vector_store.available: {getattr(vector_store, 'available', 'undefined')}")
-                    except Exception as e:
-                        st.error(f"接続の再試行に失敗しました: {e}")
-                        st.error("エラーの詳細:")
-                        st.exception(e)
-        
-        # 代わりにREST API経由での解決方法を提案
-        st.info("""
-        注: Pineconeのコントローラーサーバーに接続できない場合は、REST API経由での接続は成功している可能性があります。
-        アプリケーションはREST APIを自動的に使用します。
-        
-        以下の点を確認してください：
-        1. インターネット接続が安定しているか
-        2. Pinecone APIキーが正しく設定されているか
-        3. インデックスが存在し、アクセス可能か
-        
-        問題が解決しない場合は「緊急オフラインモード」を使用すると、一時的にメモリ内ストレージでアプリを使用できます。
-        """)
-        return
-    
     # 1.ドキュメント登録
     st.subheader("ドキュメントをデータベースに登録")
     
@@ -535,6 +379,9 @@ def manage_db():
     uploaded_file = st.file_uploader('テキストをアップロードしてください', type='txt')
     
     if uploaded_file:
+        logger.info(f"ファイルアップロード検知: {uploaded_file.name}")
+        logger.info(f"ファイル情報: タイプ={uploaded_file.type}, サイズ={uploaded_file.size:,} bytes")
+        
         # メタデータ入力フォーム
         with st.expander("メタデータ入力", expanded=True):
             col1, col2 = st.columns(2)
@@ -559,6 +406,7 @@ def manage_db():
         
         # 登録ボタン
         if st.button("登録する"):
+            logger.info("ドキュメント登録処理を開始")
             with st.spinner('登録中...'):
                 # メタデータの作成
                 metadata = {
@@ -571,9 +419,15 @@ def manage_db():
                     "latitude": latitude,
                     "longitude": longitude,
                 }
+                logger.info(f"メタデータ: {metadata}")
                 
                 # ドキュメント登録関数を呼び出し
-                register_document(uploaded_file, additional_metadata=metadata)
+                if register_document(uploaded_file, additional_metadata=metadata):
+                    logger.info("ドキュメント登録が完了しました")
+                    st.success("ドキュメントの登録が完了しました！")
+                else:
+                    logger.error("ドキュメント登録に失敗しました")
+                    st.error("ドキュメントの登録に失敗しました。")
 
     st.markdown("---")
 
@@ -587,19 +441,23 @@ def manage_db():
     
     # 表示ボタン
     if st.button("登録済みドキュメントを表示"):
+        logger.info("登録済みドキュメントの表示を開始")
         with st.spinner('取得中...'):
             try:
                 # ドキュメント数を取得
                 count = vector_store.count()
+                logger.info(f"データベース内のドキュメント数: {count}")
                 st.info(f"データベースには{count}件のドキュメントが登録されています")
                 
                 # 注意: Pineconeは全件取得に対応していないため、検索結果のみ表示
                 st.warning("Pineconeでは全件表示ができません。検索フォームを使ってドキュメントを検索してください。")
                 
             except Exception as e:
+                logger.error(f"ドキュメント取得中にエラー: {e}")
+                logger.error(traceback.format_exc())
                 st.error(f"ドキュメント取得中にエラーが発生しました: {e}")
                 st.exception(e)
-    
+
     # 3.データベース操作（メンテナンス機能）
     with st.expander("データベースメンテナンス", expanded=False):
         st.warning("⚠️ 以下の操作は慎重に行ってください")
@@ -610,16 +468,25 @@ def manage_db():
             # 特定IDのドキュメント削除
             delete_id = st.text_input("削除するドキュメントID", "")
             if st.button("ドキュメントを削除") and delete_id:
+                logger.info(f"ドキュメント削除処理を開始: ID={delete_id}")
                 with st.spinner('削除中...'):
                     try:
                         result = vector_store.delete_documents([delete_id])
                         if result:
+                            logger.info(f"ドキュメント {delete_id} の削除に成功")
                             st.success(f"ドキュメント {delete_id} を削除しました")
                         else:
+                            logger.error(f"ドキュメント {delete_id} の削除に失敗")
                             st.error(f"ドキュメント {delete_id} の削除に失敗しました")
                     except Exception as e:
+                        logger.error(f"削除中にエラー: {e}")
+                        logger.error(traceback.format_exc())
                         st.error(f"削除中にエラーが発生しました: {e}")
                         st.exception(e)
+
+    logger.info("="*50)
+    logger.info(f"ベクトルDB管理ページの処理を完了: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info("="*50)
 
 # ページ関数の定義 - チャットインターフェースの実装
 def chat_interface():
