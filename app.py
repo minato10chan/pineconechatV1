@@ -66,27 +66,16 @@ chat_history = ChatHistory()
 def initialize_vector_store():
     global vector_store, vector_store_available
     
-    print("VectorStoreの初期化を開始します...")
-    
     # 既に初期化済みの場合は再初期化しない
-    if vector_store is not None:
-        print("VectorStoreは既に初期化されています。再初期化をスキップします。")
-        # 既にvector_storeはあるが、使用可能かどうかを確認
-        vector_store_available = getattr(vector_store, 'available', False)
-        # クライアントの状態も確認
-        if hasattr(vector_store, 'pinecone_client'):
-            client_available = getattr(vector_store.pinecone_client, 'available', False)
-            vector_store_available = vector_store_available or client_available
-        print(f"ベクトルストアの状態: {'利用可能' if vector_store_available else '利用不可'}")
+    if vector_store is not None and vector_store_available:
+        print("VectorStoreは既に初期化済みで利用可能です。再初期化をスキップします。")
         return vector_store
     
     # セッション状態に保存されている場合はそれを使用
     if 'vector_store' in st.session_state and st.session_state.vector_store is not None:
         print("セッション状態からVectorStoreを復元します...")
         vector_store = st.session_state.vector_store
-        # 使用可能かどうかを確認
         vector_store_available = getattr(vector_store, 'available', False)
-        # クライアントの状態も確認
         if hasattr(vector_store, 'pinecone_client'):
             client_available = getattr(vector_store.pinecone_client, 'available', False)
             vector_store_available = vector_store_available or client_available
@@ -107,7 +96,6 @@ def initialize_vector_store():
             
             # REST API経由での接続を再確認
             if not vector_store_available and hasattr(vector_store, 'pinecone_client'):
-                # _check_rest_api_connectionメソッドが実装されている場合は使用
                 if hasattr(vector_store, '_check_rest_api_connection'):
                     api_available = vector_store._check_rest_api_connection()
                     if api_available:
@@ -115,7 +103,6 @@ def initialize_vector_store():
                         vector_store_available = True
                         vector_store.available = True
                 else:
-                    # 従来の方法で確認
                     client_available = getattr(vector_store.pinecone_client, 'available', False)
                     if client_available:
                         print("REST API経由でPineconeに接続できています。VectorStoreを使用可能にします。")
