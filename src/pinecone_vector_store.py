@@ -8,6 +8,7 @@ import traceback
 import time
 import uuid
 from datetime import datetime
+import logging
 
 # 環境変数のロード
 load_dotenv()
@@ -18,64 +19,67 @@ from langchain_openai import OpenAIEmbeddings
 # 固定のコレクション名
 PINECONE_NAMESPACE = "ask_the_doc_collection"
 
+# ロガーの設定
+logger = logging.getLogger('app.pinecone_vector_store')
+
 class PineconeVectorStore:
     def __init__(self):
         """PineconeベースのベクトルストアをStreamlit上で初期化"""
         try:
-            print("Pineconeベクトルストアの初期化を開始します...")
-            print(f"環境変数: PINECONE_API_KEY={'設定済み' if os.environ.get('PINECONE_API_KEY') else '未設定'}")
-            print(f"環境変数: PINECONE_ENVIRONMENT={os.environ.get('PINECONE_ENVIRONMENT')}")
-            print(f"環境変数: PINECONE_INDEX={os.environ.get('PINECONE_INDEX')}")
+            logger.info("Pineconeベクトルストアの初期化を開始します...")
+            logger.info(f"環境変数: PINECONE_API_KEY={'設定済み' if os.environ.get('PINECONE_API_KEY') else '未設定'}")
+            logger.info(f"環境変数: PINECONE_ENVIRONMENT={os.environ.get('PINECONE_ENVIRONMENT')}")
+            logger.info(f"環境変数: PINECONE_INDEX={os.environ.get('PINECONE_INDEX')}")
             
             # Pineconeクライアントが既にセッションにあれば再利用
             if 'pinecone_client' in st.session_state and st.session_state.pinecone_client:
                 self.pinecone_client = st.session_state.pinecone_client
-                print("セッション状態からPineconeクライアントを取得しました")
+                logger.info("セッション状態からPineconeクライアントを取得しました")
             else:
                 # Pineconeクライアントの初期化
                 from components.pinecone_client import PineconeClient
                 self.pinecone_client = PineconeClient()
                 st.session_state.pinecone_client = self.pinecone_client
-                print("Pineconeクライアントを新規に初期化しました")
+                logger.info("Pineconeクライアントを新規に初期化しました")
             
             # クライアントの接続状態を確認
             self.available = getattr(self.pinecone_client, 'available', False)
-            print(f"Pineconeクライアント接続状態: {'利用可能' if self.available else '利用不可'}")
+            logger.info(f"Pineconeクライアント接続状態: {'利用可能' if self.available else '利用不可'}")
             
             # 接続状態の詳細を表示
             if not self.available:
-                print("\n接続状態の詳細:")
-                print(f"- vector_store_available: {self.available}")
+                logger.info("\n接続状態の詳細:")
+                logger.info(f"- vector_store_available: {self.available}")
                 if hasattr(self.pinecone_client, 'available'):
-                    print(f"- pinecone_client_available: {self.pinecone_client.available}")
+                    logger.info(f"- pinecone_client_available: {self.pinecone_client.available}")
                 if hasattr(self.pinecone_client, 'initialization_error'):
-                    print(f"- initialization_error: {self.pinecone_client.initialization_error}")
+                    logger.info(f"- initialization_error: {self.pinecone_client.initialization_error}")
                 if hasattr(self.pinecone_client, 'temporary_failure'):
-                    print(f"- temporary_failure: {self.pinecone_client.temporary_failure}")
+                    logger.info(f"- temporary_failure: {self.pinecone_client.temporary_failure}")
                 if hasattr(self.pinecone_client, 'failed_attempts'):
-                    print(f"- failed_attempts: {self.pinecone_client.failed_attempts}")
+                    logger.info(f"- failed_attempts: {self.pinecone_client.failed_attempts}")
                 if hasattr(self.pinecone_client, 'is_streamlit_cloud'):
-                    print(f"- is_streamlit_cloud: {self.pinecone_client.is_streamlit_cloud}")
+                    logger.info(f"- is_streamlit_cloud: {self.pinecone_client.is_streamlit_cloud}")
             
             # REST API接続が成功している場合も確認
             if not self.available:
                 # REST APIメソッドを直接呼び出して確認
                 api_available = self._check_rest_api_connection()
                 if api_available:
-                    print("REST API経由でのPinecone接続が確認できました。VectorStoreを使用可能にします。")
+                    logger.info("REST API経由でのPinecone接続が確認できました。VectorStoreを使用可能にします。")
                     self.available = True
                     self.pinecone_client.available = True
                 else:
-                    print("REST API経由での接続も失敗しました。")
-                    print("接続状態の詳細:")
-                    print(f"- vector_store_available: {self.available}")
-                    print(f"- pinecone_client_available: {getattr(self.pinecone_client, 'available', False)}")
-                    print(f"- temporary_failure: {getattr(self.pinecone_client, 'temporary_failure', False)}")
-                    print(f"- is_streamlit_cloud: {getattr(self.pinecone_client, 'is_streamlit_cloud', False)}")
+                    logger.error("REST API経由での接続も失敗しました。")
+                    logger.error("接続状態の詳細:")
+                    logger.error(f"- vector_store_available: {self.available}")
+                    logger.error(f"- pinecone_client_available: {getattr(self.pinecone_client, 'available', False)}")
+                    logger.error(f"- temporary_failure: {getattr(self.pinecone_client, 'temporary_failure', False)}")
+                    logger.error(f"- is_streamlit_cloud: {getattr(self.pinecone_client, 'is_streamlit_cloud', False)}")
             
             # Pineconeが利用可能でない場合は早期リターン
             if not self.available:
-                print("Pineconeクライアントが利用できません")
+                logger.error("Pineconeクライアントが利用できません")
                 error_msg = "Pineconeクライアントが利用できません。\n\n"
                 error_msg += "デバッグ情報:\n"
                 error_msg += f"- vector_store_available: {self.available}\n"
@@ -99,10 +103,10 @@ class PineconeVectorStore:
             try:
                 from components.llm import oai_embeddings
                 self.embeddings = oai_embeddings
-                print("OpenAI埋め込みモデルの初期化が完了しました")
+                logger.info("OpenAI埋め込みモデルの初期化が完了しました")
             except Exception as e:
-                print(f"OpenAI埋め込みモデルの初期化エラー: {e}")
-                print(traceback.format_exc())
+                logger.error(f"OpenAI埋め込みモデルの初期化エラー: {e}")
+                logger.error(traceback.format_exc())
                 raise
                 
             # 一時的な障害モードかどうか
@@ -116,11 +120,11 @@ class PineconeVectorStore:
                 "ids": []
             }
             
-            print("PineconeVectorStoreの初期化が完了しました")
+            logger.info("PineconeVectorStoreの初期化が完了しました")
             
         except Exception as e:
-            print(f"PineconeVectorStoreの初期化中にエラーが発生しました: {e}")
-            print(traceback.format_exc())
+            logger.error(f"PineconeVectorStoreの初期化中にエラーが発生しました: {e}")
+            logger.error(traceback.format_exc())
             self.available = False
             self.temporary_failure = False
             raise
@@ -129,7 +133,7 @@ class PineconeVectorStore:
         """REST API経由でPineconeの接続を確認する"""
         try:
             if not hasattr(self.pinecone_client, '_make_request'):
-                print("Pineconeクライアントに_make_requestメソッドがありません")
+                logger.error("Pineconeクライアントに_make_requestメソッドがありません")
                 return False
                 
             # インデックス一覧を取得
@@ -142,13 +146,14 @@ class PineconeVectorStore:
             )
             
             if response and response.status_code == 200:
-                print("REST API経由でPineconeに接続できました")
+                logger.info("REST API経由でPineconeに接続できました")
                 return True
             else:
-                print(f"REST API経由でのPinecone接続テストに失敗: {getattr(response, 'status_code', 'N/A')}")
+                logger.error(f"REST API経由でのPinecone接続テストに失敗: {getattr(response, 'status_code', 'N/A')}")
                 return False
         except Exception as e:
-            print(f"REST API接続確認中のエラー: {e}")
+            logger.error(f"REST API接続確認中のエラー: {e}")
+            logger.error(traceback.format_exc())
             return False
 
     def add_documents(self, documents):
@@ -164,26 +169,26 @@ class PineconeVectorStore:
         # 緊急モード検出：Streamlit Cloud環境で一時的な障害がある場合
         emergency_mode = self.is_streamlit_cloud and self.temporary_failure
         if emergency_mode:
-            print("緊急オフラインモード: ドキュメントをメモリ内ストレージに保存します")
+            logger.info("緊急オフラインモード: ドキュメントをメモリ内ストレージに保存します")
         elif not self.available:
             # REST API接続を再確認し、強制的に有効化
             try:
                 rest_api_available = self._check_rest_api_connection()
                 if rest_api_available:
-                    print("ドキュメントアップロード前: REST API接続が確認できました。利用可能に設定します。")
+                    logger.info("ドキュメントアップロード前: REST API接続が確認できました。利用可能に設定します。")
                     self.available = True
                     if hasattr(self, 'pinecone_client') and hasattr(self.pinecone_client, 'available'):
                         self.pinecone_client.available = True
                 else:
-                    print("ドキュメントアップロード前: REST API接続の確認に失敗しました")
-                    print("接続状態の詳細:")
-                    print(f"- vector_store_available: {self.available}")
-                    print(f"- pinecone_client_available: {getattr(self.pinecone_client, 'available', False)}")
-                    print(f"- temporary_failure: {self.temporary_failure}")
-                    print(f"- is_streamlit_cloud: {self.is_streamlit_cloud}")
+                    logger.error("ドキュメントアップロード前: REST API接続の確認に失敗しました")
+                    logger.error("接続状態の詳細:")
+                    logger.error(f"- vector_store_available: {self.available}")
+                    logger.error(f"- pinecone_client_available: {getattr(self.pinecone_client, 'available', False)}")
+                    logger.error(f"- temporary_failure: {self.temporary_failure}")
+                    logger.error(f"- is_streamlit_cloud: {self.is_streamlit_cloud}")
             except Exception as e:
-                print(f"REST API接続確認中にエラー: {e}")
-                print(traceback.format_exc())
+                logger.error(f"REST API接続確認中にエラー: {e}")
+                logger.error(traceback.format_exc())
                 
             # 通常モードで利用できない場合はエラー
             if not self.available and not emergency_mode:
@@ -194,7 +199,7 @@ class PineconeVectorStore:
                 error_msg += f"\n- pinecone_client_available: {getattr(self.pinecone_client, 'available', False)}"
                 error_msg += f"\n- temporary_failure: {self.temporary_failure}"
                 error_msg += f"\n- is_streamlit_cloud: {self.is_streamlit_cloud}"
-                print(error_msg)
+                logger.error(error_msg)
                 raise ValueError(error_msg)
         
         try:
@@ -213,7 +218,7 @@ class PineconeVectorStore:
                 ids = [f"doc_{i}_{uuid.uuid4()}" for i in range(len(documents))]
             
             # 埋め込みベクトルの生成
-            print(f"{len(texts)}件のドキュメントの埋め込みベクトルを生成中...")
+            logger.info(f"{len(texts)}件のドキュメントの埋め込みベクトルを生成中...")
             embeddings = self.embeddings.embed_documents(texts)
             
             # 緊急オフラインモードの場合、メモリに保存して成功を返す
@@ -228,9 +233,9 @@ class PineconeVectorStore:
                     self.offline_storage["metadata"].append(metadata)
                     
                     if (i + 1) % 10 == 0 or i == len(ids) - 1:
-                        print(f"緊急モード: {i+1}/{len(ids)}件のベクトルをメモリ内ストレージに保存しました")
+                        logger.info(f"緊急モード: {i+1}/{len(ids)}件のベクトルをメモリ内ストレージに保存しました")
                 
-                print(f"緊急モード: 合計{len(ids)}件のドキュメントをメモリ内に保存しました")
+                logger.info(f"緊急モード: 合計{len(ids)}件のドキュメントをメモリ内に保存しました")
                 return True
             
             # 通常のPinecone処理（既存のコード）
@@ -256,29 +261,29 @@ class PineconeVectorStore:
                     # REST APIまたはSDKでアップサート
                     success = self._upsert_batch(batch_vectors)
                     if success:
-                        print(f"{i+1}/{len(ids)}件のベクトル登録完了")
+                        logger.info(f"{i+1}/{len(ids)}件のベクトル登録完了")
                     else:
-                        print(f"{i+1}/{len(ids)}件のベクトル登録に失敗")
+                        logger.error(f"{i+1}/{len(ids)}件のベクトル登録に失敗")
                         # エラーが発生した場合、再度REST API接続を試みる
                         rest_api_available = self._check_rest_api_connection()
                         if rest_api_available:
                             # 最後のバッチを再試行
                             retry_success = self._upsert_batch(batch_vectors)
                             if retry_success:
-                                print(f"再試行成功: {i+1}/{len(ids)}件のベクトル登録完了")
+                                logger.info(f"再試行成功: {i+1}/{len(ids)}件のベクトル登録完了")
                             else:
-                                print(f"再試行失敗: {i+1}/{len(ids)}件のベクトル登録に失敗")
+                                logger.error(f"再試行失敗: {i+1}/{len(ids)}件のベクトル登録に失敗")
                                 raise ValueError(f"バッチアップサートの再試行に失敗しました。(処理件数: {i+1}/{len(ids)})")
             
-            print(f"合計{len(ids)}件のドキュメントをPineconeにアップロードしました")
+            logger.info(f"合計{len(ids)}件のドキュメントをPineconeにアップロードしました")
             return True
         except Exception as e:
-            print(f"ドキュメントのアップロード中にエラーが発生しました: {e}")
-            print(traceback.format_exc())
+            logger.error(f"ドキュメントのアップロード中にエラーが発生しました: {e}")
+            logger.error(traceback.format_exc())
             
             # 例外発生時、緊急モードを有効化
             if self.is_streamlit_cloud and not self.temporary_failure:
-                print("例外発生により緊急オフラインモードに切り替えます。次回の実行でメモリ内ストレージを使用します。")
+                logger.info("例外発生により緊急オフラインモードに切り替えます。次回の実行でメモリ内ストレージを使用します。")
                 self.temporary_failure = True
                 if hasattr(self.pinecone_client, 'temporary_failure'):
                     self.pinecone_client.temporary_failure = True
@@ -310,9 +315,9 @@ class PineconeVectorStore:
                         self.available = True
                         if hasattr(self.pinecone_client, 'available'):
                             self.pinecone_client.available = True
-                        print("_upsert_batch: REST API接続が確認できました。強制的に利用可能に設定します。")
+                        logger.info("_upsert_batch: REST API接続が確認できました。強制的に利用可能に設定します。")
                     else:
-                        print("Pineconeクライアントが利用できないため、ベクトルをアップロードできません")
+                        logger.error("Pineconeクライアントが利用できないため、ベクトルをアップロードできません")
                         debug_info["errors"].append({
                             "stage": "availability_check",
                             "message": "Pineconeクライアントが利用できません",
@@ -324,8 +329,8 @@ class PineconeVectorStore:
                 # 公式SDKがある場合はSDKを使用
                 if hasattr(self.pinecone_client, 'index'):
                     try:
-                        print("SDKを使用してベクトルをアップロード中...")
-                        print(f"バッチサイズ: {len(vectors)}、名前空間: {self.namespace}")
+                        logger.info("SDKを使用してベクトルをアップロード中...")
+                        logger.info(f"バッチサイズ: {len(vectors)}、名前空間: {self.namespace}")
                         
                         # SDK呼び出し前の状態をログ記録
                         debug_info["sdk_attempt"] = {
@@ -338,24 +343,24 @@ class PineconeVectorStore:
                             vectors=vectors,
                             namespace=self.namespace
                         )
-                        print("SDKを使用したアップロード成功")
+                        logger.info("SDKを使用したアップロード成功")
                         debug_info["success"] = True
                         debug_info["method"] = "sdk"
                         return True
                     except Exception as e:
-                        print(f"SDK経由でのバッチアップサートエラー: {e}")
-                        print(f"エラータイプ: {type(e).__name__}")
-                        print(traceback.format_exc())
+                        logger.error(f"SDK経由でのバッチアップサートエラー: {e}")
+                        logger.error(f"エラータイプ: {type(e).__name__}")
+                        logger.error(traceback.format_exc())
                         debug_info["errors"].append({
                             "stage": "sdk_upsert",
                             "message": str(e),
                             "error_type": type(e).__name__,
                             "traceback": traceback.format_exc()
                         })
-                        print("REST APIでの代替処理を試みます...")
+                        logger.info("REST APIでの代替処理を試みます...")
                         
                 # REST APIでアップサート
-                print("REST APIを使用してベクトルをアップロード中...")
+                logger.info("REST APIを使用してベクトルをアップロード中...")
                 api_url = f"https://api.pinecone.io/vectors/upsert/{self.pinecone_client.index_name}"
                 data = {
                     "vectors": vectors,
@@ -384,12 +389,12 @@ class PineconeVectorStore:
                 debug_info["responses"].append(response_info)
                 
                 if response and response.status_code in [200, 201, 202]:
-                    print(f"REST APIを使用したアップロード成功: {response.status_code}")
+                    logger.info(f"REST APIを使用したアップロード成功: {response.status_code}")
                     debug_info["success"] = True
                     debug_info["method"] = "rest_api"
                     return True
                 else:
-                    print(f"バッチアップサートエラー: {getattr(response, 'status_code', 'N/A')} - {getattr(response, 'text', 'No response')[:200]}")
+                    logger.error(f"バッチアップサートエラー: {getattr(response, 'status_code', 'N/A')} - {getattr(response, 'text', 'No response')[:200]}")
                     
                     # エラー詳細をログに記録
                     debug_info["errors"].append({
@@ -404,14 +409,14 @@ class PineconeVectorStore:
                         retry_count += 1
                         debug_info["retry_attempts"] += 1
                         wait_time = 2 ** retry_count  # 指数バックオフ
-                        print(f"サーバーエラーのため {wait_time} 秒待機してリトライします ({retry_count}/{max_retries})...")
+                        logger.info(f"サーバーエラーのため {wait_time} 秒待機してリトライします ({retry_count}/{max_retries})...")
                         time.sleep(wait_time)
                         continue
                     return False
             except Exception as e:
-                print(f"バッチアップサート中のエラー: {e}")
-                print(f"エラータイプ: {type(e).__name__}")
-                print(traceback.format_exc())
+                logger.error(f"バッチアップサート中のエラー: {e}")
+                logger.error(f"エラータイプ: {type(e).__name__}")
+                logger.error(traceback.format_exc())
                 
                 # エラー詳細をログに記録
                 debug_info["errors"].append({
@@ -425,15 +430,15 @@ class PineconeVectorStore:
                 debug_info["retry_attempts"] += 1
                 if retry_count < max_retries:
                     wait_time = 2 ** retry_count  # 指数バックオフ
-                    print(f"エラーのため {wait_time} 秒待機してリトライします ({retry_count}/{max_retries})...")
+                    logger.info(f"エラーのため {wait_time} 秒待機してリトライします ({retry_count}/{max_retries})...")
                     time.sleep(wait_time)
                 else:
                     # 詳細なエラー情報をログに残す
-                    print(f"最大リトライ回数に達しました。デバッグ情報: {json.dumps(debug_info, default=str)}")
+                    logger.error(f"最大リトライ回数に達しました。デバッグ情報: {json.dumps(debug_info, default=str)}")
                     return False
         
-        print(f"最大リトライ回数 ({max_retries}) に達しました。アップロードは失敗しました。")
-        print(f"詳細なデバッグ情報: {json.dumps(debug_info, default=str)}")
+        logger.error(f"最大リトライ回数 ({max_retries}) に達しました。アップロードは失敗しました。")
+        logger.error(f"詳細なデバッグ情報: {json.dumps(debug_info, default=str)}")
         return False
 
     def delete_documents(self, ids):
@@ -448,7 +453,7 @@ class PineconeVectorStore:
                     ids=ids,
                     namespace=self.namespace
                 )
-                print(f"{len(ids)}件のドキュメントを削除しました")
+                logger.info(f"{len(ids)}件のドキュメントを削除しました")
                 return True
                 
             # REST APIで削除
@@ -465,14 +470,14 @@ class PineconeVectorStore:
             )
             
             if response and response.status_code in [200, 201, 202]:
-                print(f"{len(ids)}件のドキュメントを削除しました")
+                logger.info(f"{len(ids)}件のドキュメントを削除しました")
                 return True
             else:
-                print(f"ドキュメント削除エラー: {getattr(response, 'status_code', 'N/A')} - {getattr(response, 'text', 'No response')}")
+                logger.error(f"ドキュメント削除エラー: {getattr(response, 'status_code', 'N/A')} - {getattr(response, 'text', 'No response')}")
                 return False
         except Exception as e:
-            print(f"ドキュメント削除中のエラー: {e}")
-            print(traceback.format_exc())
+            logger.error(f"ドキュメント削除中のエラー: {e}")
+            logger.error(traceback.format_exc())
             return False
 
     def get_documents(self, ids=None):
@@ -483,7 +488,7 @@ class PineconeVectorStore:
         try:
             if ids is None:
                 # 全てのドキュメントを取得（実際にはPineconeで全取得は難しいので、フェッチはせず空のリストを返す）
-                print("Pineconeでは全てのドキュメントを一度に取得することはできません")
+                logger.info("Pineconeでは全てのドキュメントを一度に取得することはできません")
                 return {"ids": [], "documents": [], "metadatas": []}
             
             # IDsが指定されている場合は、それらを取得
@@ -531,12 +536,12 @@ class PineconeVectorStore:
                 
                     return results
                 except Exception as e:
-                    print(f"レスポンスのJSON解析エラー: {e}")
+                    logger.error(f"レスポンスのJSON解析エラー: {e}")
             
             return results
         except Exception as e:
-            print(f"ドキュメント取得中のエラー: {e}")
-            print(traceback.format_exc())
+            logger.error(f"ドキュメント取得中のエラー: {e}")
+            logger.error(traceback.format_exc())
             return {"ids": [], "documents": [], "metadatas": []}
 
     def search(self, query, n_results=5, filter_conditions=None):
@@ -544,7 +549,7 @@ class PineconeVectorStore:
         # 緊急モード検出
         emergency_mode = self.is_streamlit_cloud and self.temporary_failure
         if emergency_mode and len(self.offline_storage["vectors"]) > 0:
-            print("緊急オフラインモード: メモリ内ストレージを検索します")
+            logger.info("緊急オフラインモード: メモリ内ストレージを検索します")
             
             try:
                 # クエリの埋め込みを生成
@@ -584,11 +589,11 @@ class PineconeVectorStore:
                     "metadatas": [[{k: v for k, v in self.offline_storage["metadata"][i].items() if k != "text"} for i in sorted_indices]]
                 }
                 
-                print(f"緊急モード: {len(sorted_indices)}件の結果をメモリ内ストレージから検索しました")
+                logger.info(f"緊急モード: {len(sorted_indices)}件の結果をメモリ内ストレージから検索しました")
                 return results
             except Exception as e:
-                print(f"緊急モードでの検索中にエラー: {e}")
-                print(traceback.format_exc())
+                logger.error(f"緊急モードでの検索中にエラー: {e}")
+                logger.error(traceback.format_exc())
         
         if not self.available:
             return {"ids": [[]], "documents": [[]], "distances": [[]], "metadatas": [[]]}
@@ -671,12 +676,12 @@ class PineconeVectorStore:
                             metadata = {k: v for k, v in match.get("metadata", {}).items() if k != "text"}
                             results["metadatas"][0].append(metadata)
                 except Exception as e:
-                    print(f"検索結果の処理中にエラーが発生しました: {e}")
+                    logger.error(f"検索結果の処理中にエラーが発生しました: {e}")
             
             return results
         except Exception as e:
-            print(f"検索中にエラーが発生しました: {e}")
-            print(traceback.format_exc())
+            logger.error(f"検索中にエラーが発生しました: {e}")
+            logger.error(traceback.format_exc())
             return {"ids": [[]], "documents": [[]], "distances": [[]], "metadatas": [[]]}
 
     def count(self):
@@ -690,7 +695,7 @@ class PineconeVectorStore:
                 stats = self.pinecone_client.index.describe_index_stats()
                 if stats and hasattr(stats, "namespaces") and self.namespace in stats.namespaces:
                     count = stats.namespaces[self.namespace].vector_count
-                    print(f"Pineconeコレクションには{count}件のドキュメントが登録されています")
+                    logger.info(f"Pineconeコレクションには{count}件のドキュメントが登録されています")
                     return count
                 return 0
                 
@@ -707,13 +712,13 @@ class PineconeVectorStore:
                     data = response.json()
                     if "namespaces" in data and self.namespace in data["namespaces"]:
                         count = data["namespaces"][self.namespace].get("vector_count", 0)
-                        print(f"Pineconeコレクションには{count}件のドキュメントが登録されています")
+                        logger.info(f"Pineconeコレクションには{count}件のドキュメントが登録されています")
                         return count
                 except Exception as e:
-                    print(f"レスポンスの解析中にエラーが発生しました: {e}")
+                    logger.error(f"レスポンスの解析中にエラーが発生しました: {e}")
             
             return 0
         except Exception as e:
-            print(f"ドキュメント数の取得中にエラーが発生しました: {e}")
-            print(traceback.format_exc())
+            logger.error(f"ドキュメント数の取得中にエラーが発生しました: {e}")
+            logger.error(traceback.format_exc())
             return 0 

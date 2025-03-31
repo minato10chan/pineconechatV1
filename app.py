@@ -8,6 +8,52 @@ import time
 import requests
 import sys
 import platform
+import logging
+from logging.handlers import RotatingFileHandler
+
+# ログ出力の設定
+def setup_logging():
+    # ログディレクトリの作成
+    log_dir = "logs"
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir)
+    
+    # ログファイル名の設定（日付を含む）
+    log_file = os.path.join(log_dir, f"app_{datetime.datetime.now().strftime('%Y%m%d')}.log")
+    
+    # ロガーの設定
+    logger = logging.getLogger('app')
+    logger.setLevel(logging.DEBUG)
+    
+    # ファイルハンドラの設定（ローテーション付き）
+    file_handler = RotatingFileHandler(
+        log_file,
+        maxBytes=10*1024*1024,  # 10MB
+        backupCount=5,
+        encoding='utf-8'
+    )
+    file_handler.setLevel(logging.DEBUG)
+    
+    # コンソールハンドラの設定
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    
+    # フォーマッタの設定
+    formatter = logging.Formatter(
+        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    file_handler.setFormatter(formatter)
+    console_handler.setFormatter(formatter)
+    
+    # ハンドラの追加
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+    
+    return logger
+
+# ロガーの初期化
+logger = setup_logging()
 
 # 環境変数を確実にロード
 load_dotenv(override=True)
@@ -21,9 +67,9 @@ pinecone_api_key = os.environ.get("PINECONE_API_KEY")
 pinecone_env = os.environ.get("PINECONE_ENVIRONMENT")
 pinecone_index = os.environ.get("PINECONE_INDEX")
 
-print(f"環境変数: PINECONE_API_KEY={'設定済み' if pinecone_api_key else '未設定'}")
-print(f"環境変数: PINECONE_ENVIRONMENT={pinecone_env}")
-print(f"環境変数: PINECONE_INDEX={pinecone_index}")
+logger.info(f"環境変数: PINECONE_API_KEY={'設定済み' if pinecone_api_key else '未設定'}")
+logger.info(f"環境変数: PINECONE_ENVIRONMENT={pinecone_env}")
+logger.info(f"環境変数: PINECONE_INDEX={pinecone_index}")
 
 # Pinecone SDK接続テストを削除（REST APIのみ使用）
 
@@ -72,25 +118,25 @@ def initialize_vector_store():
     
     try:
         if vector_store is None:
-            print("最初のベクトルストア初期化を実行します...")
+            logger.info("最初のベクトルストア初期化を実行します...")
             from src.pinecone_vector_store import PineconeVectorStore
             vector_store = PineconeVectorStore()
             
             # 使用可能かどうかを確認
             vector_store_available = getattr(vector_store, 'available', False)
-            print(f"PineconeベースのVectorStoreを初期化しました。状態: {'利用可能' if vector_store_available else '利用不可'}")
+            logger.info(f"PineconeベースのVectorStoreを初期化しました。状態: {'利用可能' if vector_store_available else '利用不可'}")
             
             # 接続状態の詳細を表示
             if not vector_store_available:
-                print("\n接続状態の詳細:")
-                print(f"- vector_store_available: {vector_store_available}")
+                logger.info("\n接続状態の詳細:")
+                logger.info(f"- vector_store_available: {vector_store_available}")
                 if hasattr(vector_store, 'pinecone_client'):
                     client = vector_store.pinecone_client
-                    print(f"- pinecone_client_available: {getattr(client, 'available', False)}")
-                    print(f"- initialization_error: {getattr(client, 'initialization_error', 'なし')}")
-                    print(f"- temporary_failure: {getattr(client, 'temporary_failure', False)}")
-                    print(f"- failed_attempts: {getattr(client, 'failed_attempts', 0)}")
-                    print(f"- is_streamlit_cloud: {getattr(client, 'is_streamlit_cloud', False)}")
+                    logger.info(f"- pinecone_client_available: {getattr(client, 'available', False)}")
+                    logger.info(f"- initialization_error: {getattr(client, 'initialization_error', 'なし')}")
+                    logger.info(f"- temporary_failure: {getattr(client, 'temporary_failure', False)}")
+                    logger.info(f"- failed_attempts: {getattr(client, 'failed_attempts', 0)}")
+                    logger.info(f"- is_streamlit_cloud: {getattr(client, 'is_streamlit_cloud', False)}")
                 
                 # エラーメッセージを構築
                 error_msg = "ベクトルデータベースの接続でエラーが発生しました。\n\n"
@@ -114,14 +160,14 @@ def initialize_vector_store():
                 st.error(error_msg)
                 return False
             
-            print("VectorStore initialization completed. Status: Available")
-            print(f"グローバル変数の最終状態: vector_store_available = {vector_store_available}")
-            print(f"vector_store.available = {vector_store.available}")
+            logger.info("VectorStore initialization completed. Status: Available")
+            logger.info(f"グローバル変数の最終状態: vector_store_available = {vector_store_available}")
+            logger.info(f"vector_store.available = {vector_store.available}")
             return True
             
     except Exception as e:
-        print(f"VectorStoreの初期化中にエラー: {e}")
-        print(traceback.format_exc())
+        logger.error(f"VectorStoreの初期化中にエラー: {e}")
+        logger.error(traceback.format_exc())
         vector_store_available = False
         vector_store = None
         
@@ -143,7 +189,7 @@ def initialize_vector_store():
 
 # 最初の1回だけ初期化を試みる (アプリケーション起動時)
 if 'vector_store_initialized' not in st.session_state:
-    print("最初のベクトルストア初期化を実行します...")
+    logger.info("最初のベクトルストア初期化を実行します...")
     
     # デフォルトでは接続チェックを高速にするためのフラグ
     st.session_state.connection_check_completed = False
@@ -180,8 +226,8 @@ if 'vector_store_initialized' not in st.session_state:
                         st.write(f"client.available = {getattr(client, 'available', 'undefined')}")
                         st.write(f"client.temporary_failure = {getattr(client, 'temporary_failure', False)}")
     except Exception as e:
-        print(f"初期化中にエラーが発生: {e}")
-        print(traceback.format_exc())
+        logger.error(f"初期化中にエラーが発生: {e}")
+        logger.error(traceback.format_exc())
         if 'debug_mode' in st.session_state and st.session_state.debug_mode:
             with st.sidebar:
                 st.error(f"初期化エラー: {str(e)}")
@@ -198,48 +244,48 @@ def register_document(uploaded_file, additional_metadata=None):
     global vector_store, vector_store_available
     
     # ファイルアップロード処理のログ追加
-    print(f"==== ファイルアップロード処理開始: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')} ====")
+    logger.info(f"==== ファイルアップロード処理開始: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')} ====")
     if uploaded_file:
-        print(f"ファイル名: {uploaded_file.name}, サイズ: {uploaded_file.size}バイト")
+        logger.info(f"ファイル名: {uploaded_file.name}, サイズ: {uploaded_file.size}バイト")
     
     # タイムアウト設定
     upload_timeout = 120
     start_time = time.time()
-    print(f"処理タイムアウト設定: {upload_timeout}秒")
+    logger.info(f"処理タイムアウト設定: {upload_timeout}秒")
     
     # デバッグコンテナ
     debug_container = st.expander("デバッグ情報", expanded=False)
     
     # 接続状態のログ
-    print(f"ベクトルDB接続状態: {'有効' if vector_store_available else '無効'}")
+    logger.info(f"ベクトルDB接続状態: {'有効' if vector_store_available else '無効'}")
     if vector_store:
-        print(f"vector_store.available: {getattr(vector_store, 'available', 'undefined')}")
-        print(f"緊急モード: {getattr(vector_store, 'temporary_failure', False)}")
+        logger.info(f"vector_store.available: {getattr(vector_store, 'available', 'undefined')}")
+        logger.info(f"緊急モード: {getattr(vector_store, 'temporary_failure', False)}")
         
         if hasattr(vector_store, 'pinecone_client'):
             client = vector_store.pinecone_client
-            print(f"Pineconeクライアント状態: {getattr(client, 'available', 'undefined')}")
-            print(f"一時的障害モード: {getattr(client, 'temporary_failure', False)}")
+            logger.info(f"Pineconeクライアント状態: {getattr(client, 'available', 'undefined')}")
+            logger.info(f"一時的障害モード: {getattr(client, 'temporary_failure', False)}")
     
     # ファイル処理の各ステップでログ出力
     try:
         if uploaded_file:
-            print(f"ファイル読み込み開始: {time.time() - start_time:.2f}秒経過")
+            logger.info(f"ファイル読み込み開始: {time.time() - start_time:.2f}秒経過")
             # ファイル読み込み処理...
             
             # バッチ処理の開始前にログ
-            print(f"ベクトルDB登録処理開始: {time.time() - start_time:.2f}秒経過")
+            logger.info(f"ベクトルDB登録処理開始: {time.time() - start_time:.2f}秒経過")
             
             # 各バッチ処理でログ
             for batch_idx in range(バッチ数):
-                print(f"バッチ {batch_idx+1} 処理開始: {time.time() - start_time:.2f}秒経過")
+                logger.info(f"バッチ {batch_idx+1} 処理開始: {time.time() - start_time:.2f}秒経過")
                 # バッチ処理...
-                print(f"バッチ {batch_idx+1} 処理完了: {time.time() - start_time:.2f}秒経過, 結果: {'成功' if 成功 else '失敗'}")
+                logger.info(f"バッチ {batch_idx+1} 処理完了: {time.time() - start_time:.2f}秒経過, 結果: {'成功' if 成功 else '失敗'}")
             
-            print(f"==== ファイル処理完了: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')}, 合計処理時間: {time.time() - start_time:.2f}秒 ====")
+            logger.info(f"==== ファイル処理完了: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')}, 合計処理時間: {time.time() - start_time:.2f}秒 ====")
     except Exception as e:
-        print(f"ファイル処理エラー: {str(e)}")
-        print(traceback.format_exc())
+        logger.error(f"ファイル処理エラー: {str(e)}")
+        logger.error(traceback.format_exc())
         
         # エラーメッセージを構築
         error_msg = "ベクトルデータベースの接続でエラーが発生しました。\n\n"
@@ -287,9 +333,9 @@ def manage_db():
             if hasattr(client, '_check_rest_api_connection'):
                 with st.spinner("Pinecone接続状態を確認中..."):
                     api_test_result = client._check_rest_api_connection()
-                    print(f"Pinecone REST API接続テスト結果: {api_test_result}")
+                    logger.info(f"Pinecone REST API接続テスト結果: {api_test_result}")
     except Exception as e:
-        print(f"ページロード時の接続確認エラー: {e}")
+        logger.error(f"ページロード時の接続確認エラー: {e}")
 
     # デバッグモードの表示
     if 'debug_mode' in st.session_state and st.session_state.debug_mode:
@@ -808,9 +854,9 @@ try:
     if chat_history.pinecone_available:
         saved = chat_history.force_save()
         if saved:
-            print("会話履歴を保存しました")
+            logger.info("会話履歴を保存しました")
 except Exception as e:
-    print(f"会話履歴の保存中にエラー: {e}")
+    logger.error(f"会話履歴の保存中にエラー: {e}")
 
 # ページに応じた表示
 if page == "ドキュメントに質問する":
@@ -828,21 +874,21 @@ import traceback
 
 # セッション状態のリセット
 if 'force_reset' not in st.session_state:
-    print("セッション状態の初期化を実行中...")
+    logger.info("セッション状態の初期化を実行中...")
     for key in ['vector_store', 'vector_store_initialized']:
         if key in st.session_state:
-            print(f"セッション状態から {key} を削除")
+            logger.info(f"セッション状態から {key} を削除")
             del st.session_state[key]
     st.session_state.force_reset = True
-    print("セッション状態の初期化完了")
+    logger.info("セッション状態の初期化完了")
 
 # 設定とパフォーマンスの確認
 import os
 # Pinecone接続タイムアウトの設定
 os.environ['PINECONE_REQUEST_TIMEOUT'] = '60'  # 秒単位でタイムアウトを設定
-print(f"Pineconeリクエストタイムアウトを {os.environ.get('PINECONE_REQUEST_TIMEOUT', '設定なし')} 秒に設定")
+logger.info(f"Pineconeリクエストタイムアウトを {os.environ.get('PINECONE_REQUEST_TIMEOUT', '設定なし')} 秒に設定")
 
 # デバッグ情報をログに出力
-print("システム情報:")
-print(f"- Python バージョン: {platform.python_version()}")
-print(f"- プラットフォーム: {platform.platform()}")
+logger.info("システム情報:")
+logger.info(f"- Python バージョン: {platform.python_version()}")
+logger.info(f"- プラットフォーム: {platform.platform()}")
