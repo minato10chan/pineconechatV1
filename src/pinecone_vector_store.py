@@ -42,6 +42,21 @@ class PineconeVectorStore:
             self.available = getattr(self.pinecone_client, 'available', False)
             print(f"Pineconeクライアント接続状態: {'利用可能' if self.available else '利用不可'}")
             
+            # 接続状態の詳細を表示
+            if not self.available:
+                print("\n接続状態の詳細:")
+                print(f"- vector_store_available: {self.available}")
+                if hasattr(self.pinecone_client, 'available'):
+                    print(f"- pinecone_client_available: {self.pinecone_client.available}")
+                if hasattr(self.pinecone_client, 'initialization_error'):
+                    print(f"- initialization_error: {self.pinecone_client.initialization_error}")
+                if hasattr(self.pinecone_client, 'temporary_failure'):
+                    print(f"- temporary_failure: {self.pinecone_client.temporary_failure}")
+                if hasattr(self.pinecone_client, 'failed_attempts'):
+                    print(f"- failed_attempts: {self.pinecone_client.failed_attempts}")
+                if hasattr(self.pinecone_client, 'is_streamlit_cloud'):
+                    print(f"- is_streamlit_cloud: {self.pinecone_client.is_streamlit_cloud}")
+            
             # REST API接続が成功している場合も確認
             if not self.available:
                 # REST APIメソッドを直接呼び出して確認
@@ -50,11 +65,31 @@ class PineconeVectorStore:
                     print("REST API経由でのPinecone接続が確認できました。VectorStoreを使用可能にします。")
                     self.available = True
                     self.pinecone_client.available = True
+                else:
+                    print("REST API経由での接続も失敗しました。")
+                    print("接続状態の詳細:")
+                    print(f"- vector_store_available: {self.available}")
+                    print(f"- pinecone_client_available: {getattr(self.pinecone_client, 'available', False)}")
+                    print(f"- temporary_failure: {getattr(self.pinecone_client, 'temporary_failure', False)}")
+                    print(f"- is_streamlit_cloud: {getattr(self.pinecone_client, 'is_streamlit_cloud', False)}")
             
             # Pineconeが利用可能でない場合は早期リターン
             if not self.available:
                 print("Pineconeクライアントが利用できません")
-                raise Exception("Pineconeクライアントが利用できません。APIキーと接続を確認してください。")
+                error_msg = "Pineconeクライアントが利用できません。\n\n"
+                error_msg += "デバッグ情報:\n"
+                error_msg += f"- vector_store_available: {self.available}\n"
+                error_msg += f"- pinecone_client_available: {getattr(self.pinecone_client, 'available', False)}\n"
+                error_msg += f"- initialization_error: {getattr(self.pinecone_client, 'initialization_error', 'なし')}\n"
+                error_msg += f"- temporary_failure: {getattr(self.pinecone_client, 'temporary_failure', False)}\n"
+                error_msg += f"- failed_attempts: {getattr(self.pinecone_client, 'failed_attempts', 0)}\n"
+                error_msg += f"- is_streamlit_cloud: {getattr(self.pinecone_client, 'is_streamlit_cloud', False)}\n\n"
+                error_msg += "接続問題を解決するオプション:\n"
+                error_msg += "1. インターネット接続が安定しているか確認してください\n"
+                error_msg += "2. Pinecone APIキーが正しく設定されているか確認してください\n"
+                error_msg += "3. インデックスが存在し、アクセス可能か確認してください\n"
+                error_msg += "4. 問題が解決しない場合は「緊急オフラインモード」を使用すると、一時的にメモリ内ストレージでアプリを使用できます\n"
+                raise ValueError(error_msg)
             
             # 名前空間設定
             self.namespace = PINECONE_NAMESPACE
