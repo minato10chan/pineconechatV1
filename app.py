@@ -1,6 +1,23 @@
 # pysqlite3コードを削除
 import streamlit as st
 import datetime
+import os
+from dotenv import load_dotenv
+import traceback
+
+# 環境変数を確実にロード
+load_dotenv(override=True)
+
+# Pinecone APIキーが環境変数から正しく読み込まれているか確認
+pinecone_api_key = os.environ.get("PINECONE_API_KEY")
+pinecone_env = os.environ.get("PINECONE_ENVIRONMENT")
+pinecone_index = os.environ.get("PINECONE_INDEX")
+
+print(f"環境変数: PINECONE_API_KEY={'設定済み' if pinecone_api_key else '未設定'}")
+print(f"環境変数: PINECONE_ENVIRONMENT={pinecone_env}")
+print(f"環境変数: PINECONE_INDEX={pinecone_index}")
+
+# Pinecone SDK接続テストを削除（REST APIのみ使用）
 
 # 最初のStreamlitコマンドとしてページ設定を行う
 st.set_page_config(page_title='🦜🔗 Ask the Doc App', layout="wide")
@@ -14,7 +31,6 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_community.document_loaders import TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 import tempfile
-import os
 import pandas as pd
 import io
 
@@ -51,13 +67,25 @@ def initialize_vector_store():
     # 既に初期化済みの場合は再初期化しない
     if vector_store is not None:
         print("VectorStoreは既に初期化されています。再初期化をスキップします。")
+        # 既にvector_storeはあるが、使用可能かどうかを確認
+        vector_store_available = getattr(vector_store, 'available', False)
+        # クライアントの状態も確認
+        if hasattr(vector_store, 'pinecone_client'):
+            client_available = getattr(vector_store.pinecone_client, 'available', False)
+            vector_store_available = vector_store_available or client_available
+        print(f"ベクトルストアの状態: {'利用可能' if vector_store_available else '利用不可'}")
         return vector_store
     
     # セッション状態に保存されている場合はそれを使用
     if 'vector_store' in st.session_state and st.session_state.vector_store is not None:
         vector_store = st.session_state.vector_store
-        vector_store_available = True
-        print("セッション状態からVectorStoreを復元しました")
+        # 使用可能かどうかを確認
+        vector_store_available = getattr(vector_store, 'available', False)
+        # クライアントの状態も確認
+        if hasattr(vector_store, 'pinecone_client'):
+            client_available = getattr(vector_store.pinecone_client, 'available', False)
+            vector_store_available = vector_store_available or client_available
+        print(f"セッション状態からVectorStoreを復元しました。状態: {'利用可能' if vector_store_available else '利用不可'}")
         return vector_store
         
     try:
@@ -67,8 +95,26 @@ def initialize_vector_store():
         try:
             from src.pinecone_vector_store import PineconeVectorStore
             vector_store = PineconeVectorStore()
-            vector_store_available = True
-            print("PineconeベースのVectorStoreを初期化しました")
+            # 使用可能かどうかを確認
+            vector_store_available = getattr(vector_store, 'available', False)
+            print(f"PineconeベースのVectorStoreを初期化しました。状態: {'利用可能' if vector_store_available else '利用不可'}")
+            
+            # REST API経由での接続を再確認
+            if not vector_store_available and hasattr(vector_store, 'pinecone_client'):
+                # _check_rest_api_connectionメソッドが実装されている場合は使用
+                if hasattr(vector_store, '_check_rest_api_connection'):
+                    api_available = vector_store._check_rest_api_connection()
+                    if api_available:
+                        print("REST API経由でPineconeに接続できました。VectorStoreを使用可能にします。")
+                        vector_store_available = True
+                        vector_store.available = True
+                else:
+                    # 従来の方法で確認
+                    client_available = getattr(vector_store.pinecone_client, 'available', False)
+                    if client_available:
+                        print("REST API経由でPineconeに接続できています。VectorStoreを使用可能にします。")
+                        vector_store_available = True
+                        vector_store.available = True
         except Exception as e:
             print(f"PineconeVectorStoreの初期化中にエラー: {e}")
             vector_store_available = False
@@ -77,7 +123,7 @@ def initialize_vector_store():
         
         # セッション状態に保存
         st.session_state.vector_store = vector_store
-        print("VectorStore successfully initialized")
+        print(f"VectorStore initialization completed. Status: {'Available' if vector_store_available else 'Unavailable'}")
         return vector_store
     except Exception as e:
         vector_store_available = False
@@ -182,10 +228,27 @@ def manage_db():
     if not vector_store_available:
         st.error("ベクトルデータベースの接続でエラーが発生しました。現在、ベクトルデータベースは使用できません。")
         
-        # デバッグ情報
-        st.sidebar.expander("デバッグ情報", expanded=False).write("""
-        Pineconeを使用するため、Pinecone APIキーを設定してください。
-        """)
+        # リトライボタンを提供
+        if st.button("接続を再試行"):
+            with st.spinner("Pineconeへの接続を再試行しています..."):
+                # vector_storeを初期化し直す
+                global vector_store
+                try:
+                    # セッション状態をクリア
+                    if 'vector_store' in st.session_state:
+                        del st.session_state.vector_store
+                    if 'vector_store_initialized' in st.session_state:
+                        del st.session_state.vector_store_initialized
+                    
+                    # 再初期化
+                    initialize_vector_store()
+                    st.success("接続に成功しました！ページを再読み込みします。")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"接続の再試行に失敗しました: {e}")
+        
+        # 代わりにREST API経由での解決方法を提案
+        st.info("注: Pineconeのコントローラーサーバーに接続できない場合は、REST API経由での接続は成功している可能性があります。アプリケーションはREST APIを自動的に使用します。")
         return
 
     # グローバルのvector_storeを使用

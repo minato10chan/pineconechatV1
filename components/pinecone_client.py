@@ -11,55 +11,46 @@ import streamlit as st
 try:
     import pinecone
     PINECONE_AVAILABLE = True
+    print("Pineconeモジュールのインポートに成功しました")
 except Exception as e:
     print(f"Pineconeのインポートエラー: {e}")
     PINECONE_AVAILABLE = False
 
 class PineconeClient:
     def __init__(self):
-        # Streamlit Secretsから設定を取得
-        try:
-            self.api_key = st.secrets.get("PINECONE_API_KEY")
-            self.environment = st.secrets.get("PINECONE_ENVIRONMENT", "us-east-1")
-            self.index_name = st.secrets.get("PINECONE_INDEX", "langchain-index")
-        except Exception as e:
-            # セクレットが見つからない場合は環境変数から取得
-            print(f"Streamlit Secretsからの取得に失敗したため環境変数を使用: {e}")
-            self.api_key = os.environ.get("PINECONE_API_KEY")
-            self.environment = os.environ.get("PINECONE_ENVIRONMENT", "us-east-1")
-            self.index_name = os.environ.get("PINECONE_INDEX", "langchain-index")
+        # 環境変数から直接取得
+        self.api_key = os.environ.get("PINECONE_API_KEY")
+        self.environment = os.environ.get("PINECONE_ENVIRONMENT", "us-east-1")
+        self.index_name = os.environ.get("PINECONE_INDEX", "langchain-index")
         
-        # デバッグ情報（APIキーは安全のため一部マスク）
-        masked_key = "**********" if self.api_key else "未設定"
-        print(f"Pinecone設定 - 環境: {self.environment}, インデックス: {self.index_name}, APIキー: {masked_key}")
-        
+        # Streamlit Secretsを試す (環境変数が設定されていない場合)
         if not self.api_key:
-            print("PINECONE_API_KEY環境変数が設定されていません")
+            try:
+                self.api_key = st.secrets.get("PINECONE_API_KEY")
+                if not self.environment:
+                    self.environment = st.secrets.get("PINECONE_ENVIRONMENT", "us-east-1")
+                if not self.index_name:
+                    self.index_name = st.secrets.get("PINECONE_INDEX", "langchain-index")
+                print("Streamlit Secretsから認証情報を取得しました")
+            except Exception as e:
+                print(f"Streamlit Secretsからの取得に失敗: {e}")
+        
+        # デバッグ情報
+        if self.api_key:
+            masked_key = f"{self.api_key[:8]}...{self.api_key[-4:]}"
+            print(f"Pinecone設定 - 環境: {self.environment}, インデックス: {self.index_name}, APIキー: {masked_key}")
+        else:
+            print("ERROR: PINECONE_API_KEY環境変数が設定されていません")
             self.available = False
             return
         
         # インターネット接続確認
         if not self._check_internet_connection():
-            print("インターネット接続に問題があります。ローカルモードで動作します。")
+            print("ERROR: インターネット接続に問題があります。ローカルモードで動作します。")
             self.available = False
             return
             
-        # Pineconeへの接続を初期化（公式SDK方式）
-        try:
-            print("公式SDKでPineconeに接続中...")
-            pinecone.init(api_key=self.api_key, environment=self.environment)
-            self.index = pinecone.Index(self.index_name)
-            print(f"Pineconeインデックス '{self.index_name}' に接続成功！")
-            self.available = True
-            self.namespace = "chat-history"
-            print("Pineconeクライアントの初期化完了")
-            return
-        except Exception as e:
-            print(f"公式SDKでの接続に失敗: {e}")
-            print(f"詳細: {traceback.format_exc()}")
-            print("代替方法でPineconeに接続を試みます...")
-        
-        # 代替方法: REST APIを使用
+        # REST APIでの接続テストを最初に試行
         self.headers = {
             "Api-Key": self.api_key,
             "Accept": "application/json",
@@ -72,42 +63,76 @@ class PineconeClient:
             self.available = True
             # インデックスを確認・作成
             self._check_index_rest()
+            # 名前空間設定
+            self.namespace = "chat-history"
+            print("REST API接続でPineconeクライアントの初期化完了")
+            return
+        
+        # REST APIが失敗した場合、公式SDKを試みる
+        if PINECONE_AVAILABLE:
+            try:
+                print("公式SDKでPineconeに接続を試みます...")
+                pinecone.init(api_key=self.api_key, environment=self.environment)
+                try:
+                    # インデックスリストを取得
+                    indexes = pinecone.list_indexes()
+                    print(f"利用可能なPineconeインデックス: {indexes}")
+                    
+                    if self.index_name not in indexes:
+                        print(f"警告: インデックス '{self.index_name}' が見つかりません")
+                        print("新しいインデックスの作成を試みます")
+                        try:
+                            # インデックスの作成を試みる（既存のインデックスがない場合）
+                            pinecone.create_index(
+                                name=self.index_name,
+                                dimension=1536,  # OpenAI embedding size
+                                metric="cosine"
+                            )
+                            print(f"インデックス '{self.index_name}' を作成しました")
+                        except Exception as e:
+                            print(f"インデックス作成エラー: {e}")
+                    
+                    self.index = pinecone.Index(self.index_name)
+                    print(f"Pineconeインデックス '{self.index_name}' に接続成功！")
+                    self.available = True
+                    self.namespace = "chat-history"
+                    print("SDK接続でPineconeクライアントの初期化完了")
+                    return
+                except Exception as e:
+                    print(f"インデックス操作中のエラー: {e}")
+                    print(traceback.format_exc())
+            except Exception as e:
+                print(f"公式SDKでの接続に失敗: {e}")
+                print(traceback.format_exc())
         else:
-            print("PineconeへのREST API接続に失敗しました。ローカルモードで動作します。")
-            self.available = False
+            print("Pinecone SDKが利用できないため、SDK接続は試行しません")
             
-        # 名前空間設定
-        self.namespace = "chat-history"
-        print("Pineconeクライアントの初期化完了")
+        # 両方の接続方法が失敗した場合
+        if not getattr(self, 'available', False):
+            print("PineconeへのすべてのAPI接続が失敗しました。ローカルモードで動作します。")
+            self.available = False
     
-    def __del__(self):
-        """デストラクタ：クライアント終了時の処理"""
-        try:
-            if PINECONE_AVAILABLE:
-                pinecone.deinit()
-                print("Pinecone接続を終了しました")
-        except Exception as e:
-            print(f"Pinecone終了処理中のエラー: {e}")
-    
-    def _make_request(self, method, url, json_data=None, params=None, max_retries=3):
+    def _make_request(self, method, url, json_data=None, params=None, max_retries=3, timeout=30):
         """REST APIリクエストを実行する共通メソッド"""
         retries = 0
         while retries < max_retries:
             try:
+                print(f"HTTP {method} リクエスト: {url}")
                 if method.upper() == "GET":
                     response = requests.get(
                         url, 
                         headers=self.headers,
                         params=params,
-                        timeout=30
+                        timeout=timeout
                     )
                 elif method.upper() == "POST":
+                    print(f"POSTデータ: {json.dumps(json_data)[:100]}..." if json_data else "POSTデータなし")
                     response = requests.post(
                         url, 
                         headers=self.headers,
                         json=json_data,
                         params=params,
-                        timeout=30
+                        timeout=timeout
                     )
                 elif method.upper() == "DELETE":
                     response = requests.delete(
@@ -115,11 +140,16 @@ class PineconeClient:
                         headers=self.headers,
                         json=json_data,
                         params=params,
-                        timeout=30
+                        timeout=timeout
                     )
                 else:
                     print(f"サポートされていないHTTPメソッド: {method}")
                     return None
+                
+                print(f"レスポンス: ステータスコード {response.status_code}")
+                # エラーの場合は応答本文を表示
+                if response.status_code >= 400:
+                    print(f"エラーレスポンス本文: {response.text}")
                 
                 # レートリミットエラーの場合は再試行
                 if response.status_code == 429:
@@ -149,7 +179,16 @@ class PineconeClient:
                 else:
                     print("最大再試行回数に達しました")
                     return None
-                    
+            except requests.exceptions.Timeout as e:
+                print(f"タイムアウトエラー: {e}")
+                retries += 1
+                if retries < max_retries:
+                    wait_time = 2 ** retries
+                    print(f"タイムアウト - {wait_time}秒後に再試行します...")
+                    time.sleep(wait_time)
+                else:
+                    print("最大再試行回数に達しました")
+                    return None
             except Exception as e:
                 print(f"APIリクエスト中のエラー: {e}")
                 print(traceback.format_exc())
@@ -164,17 +203,27 @@ class PineconeClient:
             api_url = "https://api.pinecone.io/indexes"
             
             print(f"Pinecone REST APIで接続テスト中... URL: {api_url}")
-            response = self._make_request(method="GET", url=api_url)
+            print(f"ヘッダー: {self.headers} (APIキーは一部マスク)")
+            
+            # タイムアウトを長くして再試行回数を増やす
+            response = self._make_request(method="GET", url=api_url, max_retries=5, timeout=30)
             
             if response and response.status_code == 200:
                 print(f"Pinecone REST API接続成功: {response.status_code}")
                 try:
                     index_list = response.json()
                     print(f"利用可能なインデックス: {index_list}")
+                    # インデックスが存在するかチェック
+                    if self.index_name in index_list:
+                        print(f"インデックス '{self.index_name}' が存在します")
+                        return True
+                    else:
+                        print(f"インデックス '{self.index_name}' が見つかりません。作成を試みます。")
+                        # インデックス作成コードは_check_index_restメソッドに移動
                 except Exception as e:
                     print(f"レスポンスのJSON解析エラー: {e}")
                     print(f"レスポンス内容: {response.text}")
-                return True
+                return True  # 接続自体は成功
             else:
                 print(f"Pinecone REST API接続エラー: {getattr(response, 'status_code', 'N/A')} - {getattr(response, 'text', 'No response')}")
                 return False

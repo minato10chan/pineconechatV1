@@ -23,6 +23,9 @@ class PineconeVectorStore:
         """PineconeベースのベクトルストアをStreamlit上で初期化"""
         try:
             print("Pineconeベクトルストアの初期化を開始します...")
+            print(f"環境変数: PINECONE_API_KEY={'設定済み' if os.environ.get('PINECONE_API_KEY') else '未設定'}")
+            print(f"環境変数: PINECONE_ENVIRONMENT={os.environ.get('PINECONE_ENVIRONMENT')}")
+            print(f"環境変数: PINECONE_INDEX={os.environ.get('PINECONE_INDEX')}")
             
             # Pineconeクライアントが既にセッションにあれば再利用
             if 'pinecone_client' in st.session_state and st.session_state.pinecone_client:
@@ -37,13 +40,35 @@ class PineconeVectorStore:
             
             # クライアントの接続状態を確認
             self.available = getattr(self.pinecone_client, 'available', False)
+            print(f"Pineconeクライアント接続状態: {'利用可能' if self.available else '利用不可'}")
+            
+            # REST API接続が成功している場合も確認
+            if not self.available:
+                # REST APIメソッドを直接呼び出して確認
+                api_available = self._check_rest_api_connection()
+                if api_available:
+                    print("REST API経由でのPinecone接続が確認できました。VectorStoreを使用可能にします。")
+                    self.available = True
+                    self.pinecone_client.available = True
+            
+            # Pineconeが利用可能でない場合は早期リターン
+            if not self.available:
+                print("Pineconeクライアントが利用できません")
+                raise Exception("Pineconeクライアントが利用できません。APIキーと接続を確認してください。")
             
             # 名前空間設定
             self.namespace = PINECONE_NAMESPACE
             self.pinecone_client.namespace = self.namespace
 
             # 埋め込みモデルの設定
-            self.embeddings = OpenAIEmbeddings()
+            try:
+                self.embeddings = OpenAIEmbeddings()
+                print("OpenAI埋め込みモデルの初期化が完了しました")
+            except Exception as e:
+                print(f"OpenAI埋め込みモデルの初期化エラー: {e}")
+                print(traceback.format_exc())
+                raise
+                
             print("PineconeVectorStoreの初期化が完了しました")
             
         except Exception as e:
@@ -51,6 +76,32 @@ class PineconeVectorStore:
             print(traceback.format_exc())
             self.available = False
             raise
+
+    def _check_rest_api_connection(self):
+        """REST API経由でPineconeの接続を確認する"""
+        try:
+            if not hasattr(self.pinecone_client, '_make_request'):
+                print("Pineconeクライアントに_make_requestメソッドがありません")
+                return False
+                
+            # インデックス一覧を取得
+            api_url = "https://api.pinecone.io/indexes"
+            response = self.pinecone_client._make_request(
+                method="GET", 
+                url=api_url, 
+                max_retries=3, 
+                timeout=30
+            )
+            
+            if response and response.status_code == 200:
+                print("REST API経由でPineconeに接続できました")
+                return True
+            else:
+                print(f"REST API経由でのPinecone接続テストに失敗: {getattr(response, 'status_code', 'N/A')}")
+                return False
+        except Exception as e:
+            print(f"REST API接続確認中のエラー: {e}")
+            return False
 
     def add_documents(self, documents):
         """ドキュメントを追加"""
@@ -105,10 +156,13 @@ class PineconeVectorStore:
                     vectors = vectors[100:]
                     
                     # REST APIまたはSDKでアップサート
-                    self._upsert_batch(batch_vectors)
-                    print(f"{i+1}/{len(ids)}件のベクトル登録完了")
+                    success = self._upsert_batch(batch_vectors)
+                    if success:
+                        print(f"{i+1}/{len(ids)}件のベクトル登録完了")
+                    else:
+                        print(f"{i+1}/{len(ids)}件のベクトル登録に失敗")
             
-            print(f"合計{len(ids)}件のドキュメントを正常にPineconeにアップロードしました")
+            print(f"合計{len(ids)}件のドキュメントをPineconeにアップロードしました")
             return True
         except Exception as e:
             print(f"ドキュメントのアップロード中にエラーが発生しました: {e}")
@@ -118,14 +172,23 @@ class PineconeVectorStore:
     def _upsert_batch(self, vectors):
         """ベクトルのバッチをPineconeにアップロード"""
         try:
+            # クライアントが利用可能かチェック
+            if not self.available or not hasattr(self.pinecone_client, 'available') or not self.pinecone_client.available:
+                print("Pineconeクライアントが利用できないため、ベクトルをアップロードできません")
+                return False
+            
             # 公式SDKがある場合はSDKを使用
             if hasattr(self.pinecone_client, 'index'):
-                self.pinecone_client.index.upsert(
-                    vectors=vectors,
-                    namespace=self.namespace
-                )
-                return True
-                
+                try:
+                    self.pinecone_client.index.upsert(
+                        vectors=vectors,
+                        namespace=self.namespace
+                    )
+                    return True
+                except Exception as e:
+                    print(f"SDK経由でのバッチアップサートエラー: {e}")
+                    print("REST APIでの代替処理を試みます...")
+                    
             # REST APIでアップサート
             api_url = f"https://api.pinecone.io/vectors/upsert/{self.pinecone_client.index_name}"
             data = {
