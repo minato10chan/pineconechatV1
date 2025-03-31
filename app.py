@@ -6,6 +6,8 @@ from dotenv import load_dotenv
 import traceback
 import time
 import requests
+import sys
+import platform
 
 # 環境変数を確実にロード
 load_dotenv(override=True)
@@ -98,8 +100,16 @@ def initialize_vector_store():
             except Exception as e:
                 print(f"REST API接続確認中にエラー: {e}")
         
+        # 状態を確認して返す
         if vector_store_available:
+            print("セッション状態に保存されたVectorStoreが利用可能です。これを使用します。")
             return vector_store
+        
+    # 自動緊急モードのチェック (セッション状態)
+    auto_emergency_mode = False
+    if 'auto_emergency_mode' in st.session_state and st.session_state.auto_emergency_mode:
+        auto_emergency_mode = True
+        print("自動緊急モードが有効です。ベクトルストアを緊急モードで初期化します。")
         
     try:
         print("Pineconeベースのベクトルストアの初期化を開始します...")
@@ -109,29 +119,42 @@ def initialize_vector_store():
             from src.pinecone_vector_store import PineconeVectorStore
             vector_store = PineconeVectorStore()
             
-            # 使用可能かどうかを確認
-            vector_store_available = getattr(vector_store, 'available', False)
-            print(f"PineconeベースのVectorStoreを初期化しました。状態: {'利用可能' if vector_store_available else '利用不可'}")
-            
-            # REST API経由での接続を再確認
-            if not vector_store_available and hasattr(vector_store, 'pinecone_client'):
-                if hasattr(vector_store, '_check_rest_api_connection'):
-                    api_available = vector_store._check_rest_api_connection()
-                    if api_available:
-                        print("REST API経由でPineconeに接続できました。VectorStoreを使用可能にします。")
-                        vector_store_available = True
-                        vector_store.available = True
-                        if hasattr(vector_store.pinecone_client, 'available'):
-                            vector_store.pinecone_client.available = True
-                else:
-                    client_available = getattr(vector_store.pinecone_client, 'available', False)
-                    if client_available:
-                        print("REST API経由でPineconeに接続できています。VectorStoreを使用可能にします。")
-                        vector_store_available = True
-                        vector_store.available = True
+            # 自動緊急モードが有効な場合
+            if auto_emergency_mode:
+                print("自動緊急モード: ベクトルストアを緊急オフラインモードに設定します")
+                vector_store.temporary_failure = True
+                vector_store.is_streamlit_cloud = True
+                if hasattr(vector_store, 'pinecone_client'):
+                    vector_store.pinecone_client.temporary_failure = True
+                    vector_store.pinecone_client.is_streamlit_cloud = True
+                    vector_store.pinecone_client.failed_attempts = 3
+                vector_store_available = True
+                vector_store.available = True
+            else:
+                # 通常の接続チェック
+                # 使用可能かどうかを確認
+                vector_store_available = getattr(vector_store, 'available', False)
+                print(f"PineconeベースのVectorStoreを初期化しました。状態: {'利用可能' if vector_store_available else '利用不可'}")
+                
+                # REST API経由での接続を再確認
+                if not vector_store_available and hasattr(vector_store, 'pinecone_client'):
+                    if hasattr(vector_store, '_check_rest_api_connection'):
+                        api_available = vector_store._check_rest_api_connection()
+                        if api_available:
+                            print("REST API経由でPineconeに接続できました。VectorStoreを使用可能にします。")
+                            vector_store_available = True
+                            vector_store.available = True
+                            if hasattr(vector_store.pinecone_client, 'available'):
+                                vector_store.pinecone_client.available = True
+                    else:
+                        client_available = getattr(vector_store.pinecone_client, 'available', False)
+                        if client_available:
+                            print("REST API経由でPineconeに接続できています。VectorStoreを使用可能にします。")
+                            vector_store_available = True
+                            vector_store.available = True
             
             # 最終的な接続状態を確認
-            if not vector_store_available:
+            if not vector_store_available and not auto_emergency_mode:
                 print("警告: VectorStoreの初期化は完了しましたが、使用可能な状態ではありません。")
                 if hasattr(vector_store, 'pinecone_client'):
                     print(f"Pineconeクライアントの状態: {'利用可能' if getattr(vector_store.pinecone_client, 'available', False) else '利用不可'}")
@@ -160,7 +183,7 @@ def initialize_vector_store():
                         print(f"接続状態の強制更新後: vector_store_available = {vector_store_available}")
             except Exception as e:
                 print(f"REST API接続の最終チェック中にエラー: {e}")
-
+        
         # セッション状態に保存
         st.session_state.vector_store = vector_store
         print(f"VectorStore initialization completed. Status: {'Available' if vector_store_available else 'Unavailable'}")
@@ -177,9 +200,52 @@ def initialize_vector_store():
         print(f"Error traceback: {traceback.format_exc()}")
         return None
 
-# 最初の1回だけ初期化を試みる
+# 最初の1回だけ初期化を試みる (アプリケーション起動時)
 if 'vector_store_initialized' not in st.session_state:
-    initialize_vector_store()
+    print("最初のベクトルストア初期化を実行します...")
+    
+    # デフォルトでは接続チェックを高速にするためのフラグ
+    st.session_state.connection_check_completed = False
+    
+    try:
+        # Streamlitのサイドバーにデバッグ情報とモード選択を追加
+        with st.sidebar:
+            # 緊急モードの自動有効化オプション
+            auto_emergency_mode = st.checkbox("緊急オフラインモードで起動", value=False, key="auto_emergency_mode")
+            if auto_emergency_mode:
+                st.warning("緊急オフラインモードが有効です。Pinecone接続を使用せず、メモリ内ストレージで動作します。")
+            
+            debug_mode = st.checkbox("デバッグモードを有効化", value=False, key="debug_mode")
+            if debug_mode:
+                st.write("### デバッグ情報")
+                st.write("初期化プロセスを実行中...")
+                st.write(f"緊急モード: {'有効' if auto_emergency_mode else '無効'}")
+        
+        # ベクトルストア初期化
+        vector_store = initialize_vector_store()
+        
+        # 接続の状態を記録
+        st.session_state.connection_check_completed = True
+        
+        # デバッグ情報を表示
+        if 'debug_mode' in st.session_state and st.session_state.debug_mode:
+            with st.sidebar:
+                st.write(f"初期化結果: vector_store_available = {vector_store_available}")
+                if vector_store:
+                    st.write(f"vector_store.available = {getattr(vector_store, 'available', 'undefined')}")
+                    st.write(f"緊急モード: {getattr(vector_store, 'temporary_failure', False)}")
+                    if hasattr(vector_store, 'pinecone_client'):
+                        client = vector_store.pinecone_client
+                        st.write(f"client.available = {getattr(client, 'available', 'undefined')}")
+                        st.write(f"client.temporary_failure = {getattr(client, 'temporary_failure', False)}")
+    except Exception as e:
+        print(f"初期化中にエラーが発生: {e}")
+        print(traceback.format_exc())
+        if 'debug_mode' in st.session_state and st.session_state.debug_mode:
+            with st.sidebar:
+                st.error(f"初期化エラー: {str(e)}")
+                st.code(traceback.format_exc(), language="python")
+    
     st.session_state.vector_store_initialized = True
 
 def register_document(uploaded_file, additional_metadata=None):
@@ -649,7 +715,56 @@ def manage_db():
     global vector_store, vector_store_available
 
     st.header("ベクトルデータベース管理")
-    
+
+    # ページロード時に接続状態を確認
+    try:
+        if vector_store and hasattr(vector_store, 'pinecone_client'):
+            client = vector_store.pinecone_client
+            if hasattr(client, '_check_rest_api_connection'):
+                with st.spinner("Pinecone接続状態を確認中..."):
+                    api_test_result = client._check_rest_api_connection()
+                    print(f"Pinecone REST API接続テスト結果: {api_test_result}")
+    except Exception as e:
+        print(f"ページロード時の接続確認エラー: {e}")
+
+    # デバッグモードの表示
+    if 'debug_mode' in st.session_state and st.session_state.debug_mode:
+        st.write("### 現在のデバッグ情報")
+        st.write(f"vector_store_available = {vector_store_available}")
+        if vector_store:
+            st.write(f"vector_store.available = {getattr(vector_store, 'available', 'undefined')}")
+            st.write(f"vector_store.temporary_failure = {getattr(vector_store, 'temporary_failure', False)}")
+            if hasattr(vector_store, 'pinecone_client'):
+                client = vector_store.pinecone_client
+                st.write(f"client.available = {getattr(client, 'available', 'undefined')}")
+                st.write(f"client.temporary_failure = {getattr(client, 'temporary_failure', False)}")
+                st.write(f"client.is_streamlit_cloud = {getattr(client, 'is_streamlit_cloud', False)}")
+                st.write(f"client.failed_attempts = {getattr(client, 'failed_attempts', 0)}")
+                
+                # APIリクエスト結果を表示
+                if hasattr(client, '_make_request'):
+                    try:
+                        with st.expander("Pinecone API接続テスト", expanded=False):
+                            with st.spinner("API接続テスト実行中..."):
+                                api_url = "https://api.pinecone.io/indexes"
+                                response = client._make_request(
+                                    method="GET", 
+                                    url=api_url, 
+                                    max_retries=1, 
+                                    timeout=5
+                                )
+                                if response:
+                                    st.success(f"API応答: ステータスコード {response.status_code}")
+                                    if response.status_code == 200:
+                                        try:
+                                            st.json(response.json())
+                                        except:
+                                            st.text(response.text[:500])
+                                else:
+                                    st.error("API接続テスト失敗: レスポンスなし")
+                    except Exception as e:
+                        st.error(f"API接続テストエラー: {str(e)}")
+
     # 緊急モードの検出
     emergency_mode = False
     if vector_store:
@@ -734,46 +849,55 @@ def manage_db():
                     st.write(f"- 初期化エラー: {client.initialization_error}")
         
         # 緊急モードへの切り替えボタン
-        if vector_store and st.button("緊急オフラインモードに切り替え"):
-            try:
-                if hasattr(vector_store, 'pinecone_client'):
-                    vector_store.temporary_failure = True
-                    vector_store.is_streamlit_cloud = True
-                    
-                    if hasattr(vector_store.pinecone_client, 'temporary_failure'):
-                        vector_store.pinecone_client.temporary_failure = True
-                        vector_store.pinecone_client.is_streamlit_cloud = True
-                        vector_store.pinecone_client.failed_attempts = 3
-                    
-                    st.success("緊急オフラインモードに切り替えました。ページを再読み込みします。")
-                    time.sleep(1)
-                    st.rerun()
-            except Exception as e:
-                st.error(f"緊急モードへの切り替え中にエラーが発生しました: {e}")
+        st.subheader("接続問題を解決するオプション")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if vector_store and st.button("緊急オフラインモードに切り替え"):
+                try:
+                    if hasattr(vector_store, 'pinecone_client'):
+                        vector_store.temporary_failure = True
+                        vector_store.is_streamlit_cloud = True
+                        
+                        if hasattr(vector_store.pinecone_client, 'temporary_failure'):
+                            vector_store.pinecone_client.temporary_failure = True
+                            vector_store.pinecone_client.is_streamlit_cloud = True
+                            vector_store.pinecone_client.failed_attempts = 3
+                        
+                        st.success("緊急オフラインモードに切り替えました。ページを再読み込みします。")
+                        time.sleep(1)
+                        st.rerun()
+                except Exception as e:
+                    st.error(f"緊急モードへの切り替え中にエラーが発生しました: {e}")
         
         # リトライボタンを提供
-        if st.button("接続を再試行"):
-            with st.spinner("Pineconeへの接続を再試行しています..."):
-                try:
-                    # セッション状態をクリア
-                    if 'vector_store' in st.session_state:
-                        del st.session_state.vector_store
-                    if 'vector_store_initialized' in st.session_state:
-                        del st.session_state.vector_store_initialized
-                    
-                    # 再初期化
-                    initialize_vector_store()
-                    
-                    # 接続状態を確認
-                    if vector_store_available:
-                        st.success("接続に成功しました！ページを再読み込みします。")
-                        st.rerun()
-                    else:
-                        st.error("接続の再試行は完了しましたが、まだ使用できない状態です。")
-                except Exception as e:
-                    st.error(f"接続の再試行に失敗しました: {e}")
-                    st.error("エラーの詳細:")
-                    st.exception(e)
+        with col2:
+            if st.button("接続を再試行"):
+                with st.spinner("Pineconeへの接続を再試行しています..."):
+                    try:
+                        # セッション状態をクリア
+                        if 'vector_store' in st.session_state:
+                            del st.session_state.vector_store
+                        if 'vector_store_initialized' in st.session_state:
+                            del st.session_state.vector_store_initialized
+                        
+                        # 再初期化
+                        initialize_vector_store()
+                        
+                        # 接続状態を確認
+                        if vector_store_available:
+                            st.success("接続に成功しました！ページを再読み込みします。")
+                            st.rerun()
+                        else:
+                            st.error("接続の再試行は完了しましたが、まだ使用できない状態です。")
+                            st.write("デバッグ情報:")
+                            st.write(f"vector_store_available: {vector_store_available}")
+                            if vector_store:
+                                st.write(f"vector_store.available: {getattr(vector_store, 'available', 'undefined')}")
+                    except Exception as e:
+                        st.error(f"接続の再試行に失敗しました: {e}")
+                        st.error("エラーの詳細:")
+                        st.exception(e)
         
         # 代わりにREST API経由での解決方法を提案
         st.info("""
@@ -1156,6 +1280,5 @@ print(f"Pineconeリクエストタイムアウトを {os.environ.get('PINECONE_R
 
 # デバッグ情報をログに出力
 print("システム情報:")
-import platform
 print(f"- Python バージョン: {platform.python_version()}")
 print(f"- プラットフォーム: {platform.platform()}")
