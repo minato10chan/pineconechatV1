@@ -142,6 +142,7 @@ def register_document(uploaded_file, additional_metadata=None):
     アップロードされたファイルをベクトルデータベースに登録する関数。
     additional_metadata: 追加のメタデータ辞書
     """
+    # グローバル変数の宣言を最初に移動
     global vector_store
 
     if not vector_store_available:
