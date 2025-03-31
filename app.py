@@ -189,6 +189,10 @@ def register_document(uploaded_file, additional_metadata=None):
     # グローバル変数の宣言を最初に移動
     global vector_store, vector_store_available
     
+    # タイムアウト設定 - ファイルアップロード処理の最大時間（秒）
+    upload_timeout = 120  # 2分
+    start_time = time.time()
+    
     # ベクトルデータベース接続状態を再確認
     if not vector_store_available and vector_store and hasattr(vector_store, 'pinecone_client'):
         client = vector_store.pinecone_client
@@ -244,12 +248,19 @@ def register_document(uploaded_file, additional_metadata=None):
         return
     
     if uploaded_file is not None:
+        # プログレスバーを表示
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        status_text.text("ファイルを処理中...")
+        
         try:
             # ファイルの内容を読み込み - 複数のエンコーディングを試す
             content = None
             encodings_to_try = ['utf-8', 'shift_jis', 'cp932', 'euc_jp', 'iso2022_jp']
             
             file_bytes = uploaded_file.getvalue()
+            progress_bar.progress(10)
+            status_text.text("ファイルのエンコーディングを検出中...")
             
             # 異なるエンコーディングを試す
             for encoding in encodings_to_try:
@@ -263,6 +274,18 @@ def register_document(uploaded_file, additional_metadata=None):
             # どのエンコーディングでも読み込めなかった場合
             if content is None:
                 st.error("ファイルのエンコーディングを検出できませんでした。UTF-8, Shift-JIS, EUC-JP, ISO-2022-JPのいずれかで保存されたファイルをお試しください。")
+                progress_bar.empty()
+                status_text.empty()
+                return
+            
+            progress_bar.progress(20)
+            status_text.text("テキストを分割中...")
+            
+            # タイムアウトチェック
+            if time.time() - start_time > upload_timeout:
+                st.error(f"処理がタイムアウトしました（{upload_timeout}秒）。ファイルサイズを小さくするか、後でもう一度お試しください。")
+                progress_bar.empty()
+                status_text.empty()
                 return
             
             # メモリ内でテキストを分割
@@ -280,6 +303,9 @@ def register_document(uploaded_file, additional_metadata=None):
             if additional_metadata:
                 base_metadata.update(additional_metadata)
             
+            progress_bar.progress(30)
+            status_text.text("ドキュメントを作成中...")
+            
             # ドキュメントを作成
             from langchain_core.documents import Document
             raw_document = Document(
@@ -293,6 +319,16 @@ def register_document(uploaded_file, additional_metadata=None):
             # セッション状態にドキュメントを保存
             st.session_state.documents.extend(documents)
 
+            progress_bar.progress(40)
+            status_text.text("ベクトルIDを作成中...")
+            
+            # タイムアウトチェック
+            if time.time() - start_time > upload_timeout:
+                st.error(f"処理がタイムアウトしました（{upload_timeout}秒）。ファイルサイズを小さくするか、後でもう一度お試しください。")
+                progress_bar.empty()
+                status_text.empty()
+                return
+
             # IDsの作成
             original_ids = []
             for i, doc in enumerate(documents):
@@ -301,23 +337,52 @@ def register_document(uploaded_file, additional_metadata=None):
                 id_str = f"{source_}_{start_:08}" #0パディングして8桁に
                 original_ids.append(id_str)
 
-            # ドキュメントの追加（UPSERT）
-            try:
-                result = vector_store.upsert_documents(documents=documents, ids=original_ids)
+            progress_bar.progress(50)
+            status_text.text(f"ドキュメントをデータベースに登録中... (0/{len(documents)}件)")
+            
+            # ドキュメントの追加（UPSERT）を小さなバッチに分割して実行
+            batch_size = 10  # 一度に処理するドキュメント数
+            success_count = 0
+            
+            for batch_start in range(0, len(documents), batch_size):
+                # タイムアウトチェック
+                if time.time() - start_time > upload_timeout:
+                    st.warning(f"処理がタイムアウトしました（{upload_timeout}秒）。{success_count}件のチャンクが登録されました。")
+                    break
                 
-                if result:
-                    st.success(f"{uploaded_file.name} をデータベースに登録しました。")
-                    st.info(f"{len(documents)}件のチャンクに分割されました")
-                else:
-                    st.warning(f"{uploaded_file.name} の登録に問題がありました。詳細はログを確認してください。")
-            except Exception as upsert_error:
-                st.error(f"ドキュメントの登録中にエラーが発生しました: {str(upsert_error)}")
-                st.error("エラーの詳細:")
-                st.exception(upsert_error)
-                # エラーの詳細をログに出力
-                print(f"Upsert error details: {str(upsert_error)}")
-                print(f"Error type: {type(upsert_error)}")
-                print(f"Error traceback: {traceback.format_exc()}")
+                batch_end = min(batch_start + batch_size, len(documents))
+                batch_docs = documents[batch_start:batch_end]
+                batch_ids = original_ids[batch_start:batch_end]
+                
+                try:
+                    # バッチをアップロード
+                    result = vector_store.upsert_documents(documents=batch_docs, ids=batch_ids)
+                    
+                    if result:
+                        success_count += len(batch_docs)
+                        # プログレスバーを更新（50%～90%）
+                        progress_percentage = 50 + int(40 * success_count / len(documents))
+                        progress_bar.progress(progress_percentage)
+                        status_text.text(f"ドキュメントをデータベースに登録中... ({success_count}/{len(documents)}件)")
+                    else:
+                        st.warning(f"バッチ {batch_start//batch_size + 1} の登録に問題がありました。")
+                except Exception as batch_error:
+                    st.error(f"バッチ {batch_start//batch_size + 1} の登録中にエラーが発生しました: {str(batch_error)}")
+                    print(f"Batch upsert error: {str(batch_error)}")
+                    print(f"Error type: {type(batch_error)}")
+                    print(f"Error traceback: {traceback.format_exc()}")
+            
+            progress_bar.progress(100)
+            
+            if success_count > 0:
+                st.success(f"{uploaded_file.name} をデータベースに登録しました。")
+                st.info(f"{success_count}/{len(documents)}件のチャンクが正常に登録されました")
+            else:
+                st.error(f"{uploaded_file.name} の登録に失敗しました。詳細はログを確認してください。")
+            
+            # クリーンアップ
+            progress_bar.empty()
+            status_text.empty()
             
         except Exception as e:
             st.error(f"ドキュメントの処理中にエラーが発生しました: {str(e)}")
@@ -327,6 +392,11 @@ def register_document(uploaded_file, additional_metadata=None):
             print(f"Document processing error details: {str(e)}")
             print(f"Error type: {type(e)}")
             print(f"Error traceback: {traceback.format_exc()}")
+            # クリーンアップ
+            if 'progress_bar' in locals():
+                progress_bar.empty()
+            if 'status_text' in locals():
+                status_text.empty()
 
 def manage_db():
     """

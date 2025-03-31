@@ -129,24 +129,44 @@ class PineconeClient:
     def _make_request(self, method, url, json_data=None, params=None, max_retries=3, timeout=30):
         """REST APIリクエストを実行する共通メソッド"""
         retries = 0
+        total_timeout = 60  # 全体の最大待機時間（秒）
+        start_time = time.time()
+        
         while retries < max_retries:
+            # 全体のタイムアウトチェック
+            if time.time() - start_time > total_timeout:
+                print(f"リクエスト全体がタイムアウトしました (最大: {total_timeout}秒)")
+                return None
+                
             try:
-                print(f"HTTP {method} リクエスト: {url}")
+                # 大きなJSONデータの場合は省略表示
+                if json_data:
+                    json_str = json.dumps(json_data)
+                    log_length = min(100, len(json_str))
+                    print(f"HTTP {method} リクエスト: {url}")
+                    print(f"データサイズ: {len(json_str)} バイト")
+                    if len(json_str) > 100:
+                        print(f"POSTデータ (先頭100バイト): {json_str[:log_length]}...")
+                else:
+                    print(f"HTTP {method} リクエスト: {url}")
+                
+                # タイムアウトを調整（リトライ回数に応じて増加）
+                current_timeout = timeout * (1 + retries * 0.5)  # リトライごとにタイムアウトを50%ずつ増加
+                
                 if method.upper() == "GET":
                     response = requests.get(
                         url, 
                         headers=self.headers,
                         params=params,
-                        timeout=timeout
+                        timeout=current_timeout
                     )
                 elif method.upper() == "POST":
-                    print(f"POSTデータ: {json.dumps(json_data)[:100]}..." if json_data else "POSTデータなし")
                     response = requests.post(
                         url, 
                         headers=self.headers,
                         json=json_data,
                         params=params,
-                        timeout=timeout
+                        timeout=current_timeout
                     )
                 elif method.upper() == "DELETE":
                     response = requests.delete(
@@ -154,32 +174,41 @@ class PineconeClient:
                         headers=self.headers,
                         json=json_data,
                         params=params,
-                        timeout=timeout
+                        timeout=current_timeout
                     )
                 else:
                     print(f"サポートされていないHTTPメソッド: {method}")
                     return None
                 
                 print(f"レスポンス: ステータスコード {response.status_code}")
+                
                 # エラーの場合は応答本文を表示
                 if response.status_code >= 400:
-                    print(f"エラーレスポンス本文: {response.text}")
+                    print(f"エラーレスポンス本文: {response.text[:200]}..." if len(response.text) > 200 else response.text)
+                
+                # 一時的なサーバーエラーの場合は再試行
+                if response.status_code >= 500:
+                    retries += 1
+                    wait_time = min(2 ** retries, 30)  # 最大30秒まで待機
+                    print(f"サーバーエラー ({response.status_code}): {wait_time}秒後に再試行します...")
+                    time.sleep(wait_time)
+                    continue
                 
                 # レートリミットエラーの場合は再試行
                 if response.status_code == 429:
                     retries += 1
-                    wait_time = 2 ** retries  # 指数バックオフ
-                    print(f"レートリミットに達しました。{wait_time}秒後に再試行します...")
+                    wait_time = min(2 ** retries + 5, 45)  # レートリミットは長めに待機、最大45秒
+                    print(f"レートリミットに達しました ({response.status_code}): {wait_time}秒後に再試行します...")
                     time.sleep(wait_time)
                     continue
                 
-                # エラーはログに記録して応答を返す
-                if response.status_code >= 400:
-                    print(f"API呼び出しエラー: {method} {url} - ステータス: {response.status_code}")
-                    try:
-                        print(f"レスポンス: {response.json()}")
-                    except:
-                        print(f"レスポンス: {response.text}")
+                # サーバーが過負荷状態やメンテナンス中の可能性がある場合
+                if response.status_code in [502, 503, 504]:
+                    retries += 1
+                    wait_time = min(5 * retries, 30)  # サーバー問題の場合は長めに待機
+                    print(f"サーバー一時的エラー ({response.status_code}): {wait_time}秒後に再試行します...")
+                    time.sleep(wait_time)
+                    continue
                 
                 return response
                 
@@ -187,27 +216,59 @@ class PineconeClient:
                 print(f"接続エラー: {e}")
                 retries += 1
                 if retries < max_retries:
-                    wait_time = 2 ** retries
-                    print(f"{wait_time}秒後に再試行します...")
+                    wait_time = min(5 * retries, 30)
+                    print(f"接続エラー - {wait_time}秒後に再試行します ({retries}/{max_retries})...")
                     time.sleep(wait_time)
                 else:
                     print("最大再試行回数に達しました")
                     return None
+                    
             except requests.exceptions.Timeout as e:
                 print(f"タイムアウトエラー: {e}")
                 retries += 1
                 if retries < max_retries:
-                    wait_time = 2 ** retries
-                    print(f"タイムアウト - {wait_time}秒後に再試行します...")
+                    wait_time = min(10 * retries, 45)  # タイムアウトは長めに待機
+                    print(f"タイムアウト - {wait_time}秒後に再試行します ({retries}/{max_retries})...")
                     time.sleep(wait_time)
                 else:
                     print("最大再試行回数に達しました")
                     return None
+                    
+            except requests.exceptions.RequestException as e:
+                print(f"リクエスト例外: {e}")
+                retries += 1
+                if retries < max_retries:
+                    wait_time = min(5 * retries, 30)
+                    print(f"リクエストエラー - {wait_time}秒後に再試行します ({retries}/{max_retries})...")
+                    time.sleep(wait_time)
+                else:
+                    print("最大再試行回数に達しました")
+                    return None
+                    
+            except json.JSONDecodeError as e:
+                print(f"JSONエラー: {e}")
+                retries += 1
+                if retries < max_retries:
+                    wait_time = 2 ** retries
+                    print(f"JSON処理エラー - {wait_time}秒後に再試行します ({retries}/{max_retries})...")
+                    time.sleep(wait_time)
+                else:
+                    print("最大再試行回数に達しました")
+                    return None
+                    
             except Exception as e:
                 print(f"APIリクエスト中のエラー: {e}")
                 print(traceback.format_exc())
-                return None
+                retries += 1
+                if retries < max_retries:
+                    wait_time = 2 ** retries
+                    print(f"未知のエラー - {wait_time}秒後に再試行します ({retries}/{max_retries})...")
+                    time.sleep(wait_time)
+                else:
+                    print("最大再試行回数に達しました")
+                    return None
         
+        print(f"リクエストに失敗しました: {method} {url}")
         return None
     
     def _test_api_connection_rest(self):
