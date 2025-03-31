@@ -66,6 +66,8 @@ chat_history = ChatHistory()
 def initialize_vector_store():
     global vector_store, vector_store_available
     
+    print("VectorStoreの初期化を開始します...")
+    
     # 既に初期化済みの場合は再初期化しない
     if vector_store is not None:
         print("VectorStoreは既に初期化されています。再初期化をスキップします。")
@@ -80,6 +82,7 @@ def initialize_vector_store():
     
     # セッション状態に保存されている場合はそれを使用
     if 'vector_store' in st.session_state and st.session_state.vector_store is not None:
+        print("セッション状態からVectorStoreを復元します...")
         vector_store = st.session_state.vector_store
         # 使用可能かどうかを確認
         vector_store_available = getattr(vector_store, 'available', False)
@@ -91,12 +94,13 @@ def initialize_vector_store():
         return vector_store
         
     try:
-        print("VectorStoreの初期化を開始します...")
+        print("Pineconeベースのベクトルストアの初期化を開始します...")
         
         # Pineconeベースのベクトルストアの初期化
         try:
             from src.pinecone_vector_store import PineconeVectorStore
             vector_store = PineconeVectorStore()
+            
             # 使用可能かどうかを確認
             vector_store_available = getattr(vector_store, 'available', False)
             print(f"PineconeベースのVectorStoreを初期化しました。状態: {'利用可能' if vector_store_available else '利用不可'}")
@@ -117,8 +121,18 @@ def initialize_vector_store():
                         print("REST API経由でPineconeに接続できています。VectorStoreを使用可能にします。")
                         vector_store_available = True
                         vector_store.available = True
+            
+            # 最終的な接続状態を確認
+            if not vector_store_available:
+                print("警告: VectorStoreの初期化は完了しましたが、使用可能な状態ではありません。")
+                if hasattr(vector_store, 'pinecone_client'):
+                    print(f"Pineconeクライアントの状態: {'利用可能' if getattr(vector_store.pinecone_client, 'available', False) else '利用不可'}")
+                    if hasattr(vector_store.pinecone_client, 'initialization_error'):
+                        print(f"初期化エラー: {vector_store.pinecone_client.initialization_error}")
+            
         except Exception as e:
             print(f"PineconeVectorStoreの初期化中にエラー: {e}")
+            print(f"エラーの詳細: {traceback.format_exc()}")
             vector_store_available = False
             vector_store = None
             raise
@@ -130,6 +144,7 @@ def initialize_vector_store():
     except Exception as e:
         vector_store_available = False
         print(f"Error initializing VectorStore: {e}")
+        print(f"Error traceback: {traceback.format_exc()}")
         return None
 
 # 最初の1回だけ初期化を試みる
@@ -248,8 +263,25 @@ def manage_db():
         
         # より詳細なエラー情報を表示
         if hasattr(vector_store, 'pinecone_client') and vector_store.pinecone_client:
-            if hasattr(vector_store.pinecone_client, 'initialization_error'):
-                error_message += f"\n\nエラーの詳細: {vector_store.pinecone_client.initialization_error}"
+            client = vector_store.pinecone_client
+            error_message += "\n\n接続状態の詳細:"
+            
+            # クライアントの利用可能性
+            client_available = getattr(client, 'available', False)
+            error_message += f"\n- Pineconeクライアント: {'利用可能' if client_available else '利用不可'}"
+            
+            # 初期化エラー
+            if hasattr(client, 'initialization_error'):
+                error_message += f"\n- 初期化エラー: {client.initialization_error}"
+            
+            # REST API接続状態
+            if hasattr(client, '_check_rest_api_connection'):
+                api_available = client._check_rest_api_connection()
+                error_message += f"\n- REST API接続: {'成功' if api_available else '失敗'}"
+            
+            # インデックス情報
+            if hasattr(client, 'index_name'):
+                error_message += f"\n- インデックス名: {client.index_name}"
         
         st.error(error_message)
         
@@ -265,13 +297,28 @@ def manage_db():
                     
                     # 再初期化
                     initialize_vector_store()
-                    st.success("接続に成功しました！ページを再読み込みします。")
-                    st.rerun()
+                    
+                    # 接続状態を確認
+                    if vector_store_available:
+                        st.success("接続に成功しました！ページを再読み込みします。")
+                        st.rerun()
+                    else:
+                        st.error("接続の再試行は完了しましたが、まだ使用できない状態です。")
                 except Exception as e:
                     st.error(f"接続の再試行に失敗しました: {e}")
+                    st.error("エラーの詳細:")
+                    st.exception(e)
         
         # 代わりにREST API経由での解決方法を提案
-        st.info("注: Pineconeのコントローラーサーバーに接続できない場合は、REST API経由での接続は成功している可能性があります。アプリケーションはREST APIを自動的に使用します。")
+        st.info("""
+        注: Pineconeのコントローラーサーバーに接続できない場合は、REST API経由での接続は成功している可能性があります。
+        アプリケーションはREST APIを自動的に使用します。
+        
+        以下の点を確認してください：
+        1. インターネット接続が安定しているか
+        2. Pinecone APIキーが正しく設定されているか
+        3. インデックスが存在し、アクセス可能か
+        """)
         return
 
     # 1.ドキュメント登録
