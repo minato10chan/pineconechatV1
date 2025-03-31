@@ -142,6 +142,9 @@ def register_document(uploaded_file, additional_metadata=None):
     アップロードされたファイルをベクトルデータベースに登録する関数。
     additional_metadata: 追加のメタデータ辞書
     """
+    # グローバル変数の宣言を最初に移動
+    global vector_store
+
     if not vector_store_available:
         st.error("データベース接続でエラーが発生しました。ベクトルデータベースが使用できません。")
         return
@@ -204,9 +207,6 @@ def register_document(uploaded_file, additional_metadata=None):
                 id_str = f"{source_}_{start_:08}" #0パディングして8桁に
                 original_ids.append(id_str)
 
-            # グローバルのVectorStoreインスタンスを使用
-            global vector_store
-            
             # ドキュメントの追加（UPSERT）
             result = vector_store.upsert_documents(documents=documents, ids=original_ids)
             
