@@ -930,44 +930,81 @@ logger.info(f"- プラットフォーム: {platform.platform()}")
 def process_uploaded_file(uploaded_file):
     """アップロードされたファイルを処理する"""
     try:
-        logger.info(f"ファイル処理開始: {uploaded_file.name}")
-        logger.info(f"ファイルタイプ: {uploaded_file.type}")
-        logger.info(f"ファイルサイズ: {uploaded_file.size} bytes")
+        logger.info("="*50)
+        logger.info(f"ファイルアップロード処理開始: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        logger.info(f"ファイル情報:")
+        logger.info(f"- ファイル名: {uploaded_file.name}")
+        logger.info(f"- ファイルタイプ: {uploaded_file.type}")
+        logger.info(f"- ファイルサイズ: {uploaded_file.size:,} bytes")
+        logger.info(f"- アップロード時刻: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        logger.info("="*50)
 
         # ファイルの内容を読み込む
+        logger.info("ファイル内容の読み込みを開始...")
         content = uploaded_file.read()
-        logger.info(f"ファイル内容の読み込み完了: {len(content)} bytes")
+        logger.info(f"ファイル内容の読み込み完了: {len(content):,} bytes")
+        logger.info(f"文字数: {len(content):,} 文字")
 
         # テキストに変換
+        logger.info("テキストへの変換を開始...")
         text = content.decode('utf-8')
-        logger.info(f"テキスト変換完了: {len(text)} 文字")
+        logger.info(f"テキスト変換完了: {len(text):,} 文字")
+        logger.info(f"最初の100文字: {text[:100]}...")
 
         # チャンクに分割
+        logger.info("テキストの分割を開始...")
         chunks = split_text(text)
-        logger.info(f"テキスト分割完了: {len(chunks)} チャンク")
+        logger.info(f"テキスト分割完了: {len(chunks):,} チャンク")
+        logger.info(f"チャンクサイズ情報:")
+        logger.info(f"- 最小チャンクサイズ: {min(len(chunk) for chunk in chunks):,} 文字")
+        logger.info(f"- 最大チャンクサイズ: {max(len(chunk) for chunk in chunks):,} 文字")
+        logger.info(f"- 平均チャンクサイズ: {sum(len(chunk) for chunk in chunks) / len(chunks):,.1f} 文字")
 
         # ベクトルストアに保存
         if vector_store and vector_store.available:
-            logger.info("ベクトルストアへの保存を開始")
+            logger.info("ベクトルストアへの保存を開始...")
+            logger.info(f"保存先: {vector_store.__class__.__name__}")
+            start_time = time.time()
+            
             for i, chunk in enumerate(chunks, 1):
                 try:
+                    chunk_start_time = time.time()
                     vector_store.add_texts([chunk])
-                    logger.info(f"チャンク {i}/{len(chunks)} の保存完了")
+                    chunk_end_time = time.time()
+                    logger.info(f"チャンク {i}/{len(chunks)} の保存完了:")
+                    logger.info(f"- 処理時間: {chunk_end_time - chunk_start_time:.2f}秒")
+                    logger.info(f"- チャンクサイズ: {len(chunk):,} 文字")
                 except Exception as e:
-                    logger.error(f"チャンク {i}/{len(chunks)} の保存中にエラー: {str(e)}")
+                    logger.error(f"チャンク {i}/{len(chunks)} の保存中にエラー:")
+                    logger.error(f"- エラータイプ: {type(e).__name__}")
+                    logger.error(f"- エラーメッセージ: {str(e)}")
+                    logger.error(f"- スタックトレース: {traceback.format_exc()}")
                     raise
-            logger.info("すべてのチャンクの保存が完了")
+            
+            end_time = time.time()
+            logger.info(f"すべてのチャンクの保存が完了:")
+            logger.info(f"- 総処理時間: {end_time - start_time:.2f}秒")
+            logger.info(f"- 平均処理時間/チャンク: {(end_time - start_time) / len(chunks):.2f}秒")
         else:
             logger.warning("ベクトルストアが利用できないため、メモリに保存")
             if 'memory_store' not in st.session_state:
                 st.session_state.memory_store = []
             st.session_state.memory_store.extend(chunks)
-            logger.info(f"メモリに {len(chunks)} チャンクを保存")
+            logger.info(f"メモリに {len(chunks):,} チャンクを保存")
+            logger.info(f"現在のメモリ内チャンク総数: {len(st.session_state.memory_store):,}")
 
+        logger.info("="*50)
+        logger.info(f"ファイル処理完了: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        logger.info("="*50)
         return True
     except Exception as e:
-        logger.error(f"ファイル処理中にエラーが発生: {str(e)}")
-        logger.error(f"エラーの詳細: {traceback.format_exc()}")
+        logger.error("="*50)
+        logger.error(f"ファイル処理中にエラーが発生: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        logger.error(f"エラーの詳細:")
+        logger.error(f"- エラータイプ: {type(e).__name__}")
+        logger.error(f"- エラーメッセージ: {str(e)}")
+        logger.error(f"- スタックトレース: {traceback.format_exc()}")
+        logger.error("="*50)
         return False
 
 def main():
