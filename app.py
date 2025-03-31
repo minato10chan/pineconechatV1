@@ -4,6 +4,7 @@ import datetime
 import os
 from dotenv import load_dotenv
 import traceback
+import time
 
 # 環境変数を確実にロード
 load_dotenv(override=True)
@@ -161,10 +162,60 @@ def register_document(uploaded_file, additional_metadata=None):
     additional_metadata: 追加のメタデータ辞書
     """
     # グローバル変数の宣言を最初に移動
-    global vector_store
+    global vector_store, vector_store_available
+    
+    # ベクトルデータベース接続状態を再確認
+    if not vector_store_available and vector_store and hasattr(vector_store, 'pinecone_client'):
+        client = vector_store.pinecone_client
+        try:
+            # REST API接続を試行
+            if hasattr(client, '_check_rest_api_connection'):
+                if client._check_rest_api_connection():
+                    print("ファイルアップロード前: REST API接続が確認できました。強制的に利用可能に設定します。")
+                    vector_store_available = True
+                    vector_store.available = True
+                    if hasattr(client, 'available'):
+                        client.available = True
+                    print(f"接続状態の強制更新後: vector_store_available = {vector_store_available}")
+        except Exception as e:
+            print(f"REST API接続の確認中にエラー: {e}")
+            print(f"エラーの詳細: {traceback.format_exc()}")
+    
+    # 接続状態を確認して詳細な情報を出力
+    print(f"ファイルアップロード処理開始: vector_store_available = {vector_store_available}")
+    if vector_store:
+        print(f"vector_store.available = {getattr(vector_store, 'available', 'undefined')}")
+        if hasattr(vector_store, 'pinecone_client'):
+            client = vector_store.pinecone_client
+            print(f"Pineconeクライアント状態: {getattr(client, 'available', 'undefined')}")
 
     if not vector_store_available:
         st.error("データベース接続でエラーが発生しました。ベクトルデータベースが使用できません。")
+        
+        # 接続状態の詳細を表示
+        st.write("## 接続状態詳細")
+        st.write(f"vector_store_available: {vector_store_available}")
+        if vector_store:
+            # vector_storeの属性を出力
+            st.write(f"vector_store.available: {getattr(vector_store, 'available', 'undefined')}")
+            
+            # 接続テスト
+            try:
+                if hasattr(vector_store, 'pinecone_client') and hasattr(vector_store.pinecone_client, '_check_rest_api_connection'):
+                    rest_result = vector_store.pinecone_client._check_rest_api_connection()
+                    st.write(f"REST API接続テスト: {'成功' if rest_result else '失敗'}")
+                    
+                    # 接続が成功している場合は再試行ボタンを表示
+                    if rest_result and st.button("REST APIで再試行"):
+                        vector_store_available = True
+                        vector_store.available = True
+                        if hasattr(vector_store.pinecone_client, 'available'):
+                            vector_store.pinecone_client.available = True
+                        st.success("REST API接続を有効化しました。続行します。")
+                        time.sleep(1)  # 少し待機してUIを更新
+                        st.rerun()
+            except Exception as e:
+                st.write(f"REST API接続テスト中にエラー: {str(e)}")
         return
     
     if uploaded_file is not None:
