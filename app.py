@@ -225,6 +225,9 @@ def manage_db():
     """
     ベクトルデータベースを管理するページの関数。
     """
+    # グローバル変数の宣言を最初に移動
+    global vector_store
+
     st.header("ベクトルデータベース管理")
 
     if not vector_store_available:
@@ -240,8 +243,6 @@ def manage_db():
         # リトライボタンを提供
         if st.button("接続を再試行"):
             with st.spinner("Pineconeへの接続を再試行しています..."):
-                # vector_storeを初期化し直す
-                global vector_store
                 try:
                     # セッション状態をクリア
                     if 'vector_store' in st.session_state:
@@ -259,9 +260,6 @@ def manage_db():
         # 代わりにREST API経由での解決方法を提案
         st.info("注: Pineconeのコントローラーサーバーに接続できない場合は、REST API経由での接続は成功している可能性があります。アプリケーションはREST APIを自動的に使用します。")
         return
-
-    # グローバルのvector_storeを使用
-    global vector_store
 
     # 1.ドキュメント登録
     st.subheader("ドキュメントをデータベースに登録")
