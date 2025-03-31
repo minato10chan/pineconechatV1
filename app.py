@@ -226,7 +226,14 @@ def manage_db():
     st.header("ベクトルデータベース管理")
 
     if not vector_store_available:
-        st.error("ベクトルデータベースの接続でエラーが発生しました。現在、ベクトルデータベースは使用できません。")
+        error_message = "ベクトルデータベースの接続でエラーが発生しました。現在、ベクトルデータベースは使用できません。"
+        
+        # より詳細なエラー情報を表示
+        if hasattr(vector_store, 'pinecone_client') and vector_store.pinecone_client:
+            if hasattr(vector_store.pinecone_client, 'initialization_error'):
+                error_message += f"\n\nエラーの詳細: {vector_store.pinecone_client.initialization_error}"
+        
+        st.error(error_message)
         
         # リトライボタンを提供
         if st.button("接続を再試行"):

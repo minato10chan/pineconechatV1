@@ -23,6 +23,10 @@ class PineconeClient:
         self.environment = os.environ.get("PINECONE_ENVIRONMENT", "us-east-1")
         self.index_name = os.environ.get("PINECONE_INDEX", "langchain-index")
         
+        # 初期化状態を設定
+        self.available = False
+        self.initialization_error = None
+        
         # Streamlit Secretsを試す (環境変数が設定されていない場合)
         if not self.api_key:
             try:
@@ -33,21 +37,23 @@ class PineconeClient:
                     self.index_name = st.secrets.get("PINECONE_INDEX", "langchain-index")
                 print("Streamlit Secretsから認証情報を取得しました")
             except Exception as e:
-                print(f"Streamlit Secretsからの取得に失敗: {e}")
+                self.initialization_error = f"Streamlit Secretsからの取得に失敗: {e}"
+                print(self.initialization_error)
+                return
         
         # デバッグ情報
         if self.api_key:
             masked_key = f"{self.api_key[:8]}...{self.api_key[-4:]}"
             print(f"Pinecone設定 - 環境: {self.environment}, インデックス: {self.index_name}, APIキー: {masked_key}")
         else:
-            print("ERROR: PINECONE_API_KEY環境変数が設定されていません")
-            self.available = False
+            self.initialization_error = "ERROR: PINECONE_API_KEY環境変数が設定されていません"
+            print(self.initialization_error)
             return
         
         # インターネット接続確認
         if not self._check_internet_connection():
-            print("ERROR: インターネット接続に問題があります。ローカルモードで動作します。")
-            self.available = False
+            self.initialization_error = "ERROR: インターネット接続に問題があります。ローカルモードで動作します。"
+            print(self.initialization_error)
             return
             
         # REST APIでの接続テストを最初に試行
@@ -62,7 +68,10 @@ class PineconeClient:
             print("REST APIでPineconeに接続しました")
             self.available = True
             # インデックスを確認・作成
-            self._check_index_rest()
+            if not self._check_index_rest():
+                self.initialization_error = "インデックスの確認または作成に失敗しました"
+                print(self.initialization_error)
+                return
             # 名前空間設定
             self.namespace = "chat-history"
             print("REST API接続でPineconeクライアントの初期化完了")
@@ -90,7 +99,9 @@ class PineconeClient:
                             )
                             print(f"インデックス '{self.index_name}' を作成しました")
                         except Exception as e:
-                            print(f"インデックス作成エラー: {e}")
+                            self.initialization_error = f"インデックス作成エラー: {e}"
+                            print(self.initialization_error)
+                            return
                     
                     self.index = pinecone.Index(self.index_name)
                     print(f"Pineconeインデックス '{self.index_name}' に接続成功！")
@@ -99,18 +110,21 @@ class PineconeClient:
                     print("SDK接続でPineconeクライアントの初期化完了")
                     return
                 except Exception as e:
-                    print(f"インデックス操作中のエラー: {e}")
+                    self.initialization_error = f"インデックス操作中のエラー: {e}"
+                    print(self.initialization_error)
                     print(traceback.format_exc())
             except Exception as e:
-                print(f"公式SDKでの接続に失敗: {e}")
+                self.initialization_error = f"公式SDKでの接続に失敗: {e}"
+                print(self.initialization_error)
                 print(traceback.format_exc())
         else:
-            print("Pinecone SDKが利用できないため、SDK接続は試行しません")
+            self.initialization_error = "Pinecone SDKが利用できないため、SDK接続は試行しません"
+            print(self.initialization_error)
             
         # 両方の接続方法が失敗した場合
-        if not getattr(self, 'available', False):
-            print("PineconeへのすべてのAPI接続が失敗しました。ローカルモードで動作します。")
-            self.available = False
+        if not self.available:
+            self.initialization_error = "PineconeへのすべてのAPI接続が失敗しました。ローカルモードで動作します。"
+            print(self.initialization_error)
     
     def _make_request(self, method, url, json_data=None, params=None, max_retries=3, timeout=30):
         """REST APIリクエストを実行する共通メソッド"""
