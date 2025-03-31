@@ -67,6 +67,8 @@ chat_history = ChatHistory()
 def initialize_vector_store():
     global vector_store, vector_store_available
     
+    print("VectorStoreの初期化を開始します...")
+    
     # 既に初期化済みの場合は再初期化しない
     if vector_store is not None and vector_store_available:
         print("VectorStoreは既に初期化済みで利用可能です。再初期化をスキップします。")
@@ -81,7 +83,22 @@ def initialize_vector_store():
             client_available = getattr(vector_store.pinecone_client, 'available', False)
             vector_store_available = vector_store_available or client_available
         print(f"セッション状態からVectorStoreを復元しました。状態: {'利用可能' if vector_store_available else '利用不可'}")
-        return vector_store
+        
+        # REST API接続を確認して状態を更新
+        if not vector_store_available and hasattr(vector_store, '_check_rest_api_connection'):
+            try:
+                if vector_store._check_rest_api_connection():
+                    print("セッション状態復元後: REST API接続が確認できました。利用可能に設定します。")
+                    vector_store_available = True
+                    vector_store.available = True
+                    if hasattr(vector_store, 'pinecone_client') and hasattr(vector_store.pinecone_client, 'available'):
+                        vector_store.pinecone_client.available = True
+                    st.session_state.vector_store = vector_store  # 更新した状態を保存
+            except Exception as e:
+                print(f"REST API接続確認中にエラー: {e}")
+        
+        if vector_store_available:
+            return vector_store
         
     try:
         print("Pineconeベースのベクトルストアの初期化を開始します...")
@@ -103,6 +120,8 @@ def initialize_vector_store():
                         print("REST API経由でPineconeに接続できました。VectorStoreを使用可能にします。")
                         vector_store_available = True
                         vector_store.available = True
+                        if hasattr(vector_store.pinecone_client, 'available'):
+                            vector_store.pinecone_client.available = True
                 else:
                     client_available = getattr(vector_store.pinecone_client, 'available', False)
                     if client_available:
@@ -144,6 +163,12 @@ def initialize_vector_store():
         # セッション状態に保存
         st.session_state.vector_store = vector_store
         print(f"VectorStore initialization completed. Status: {'Available' if vector_store_available else 'Unavailable'}")
+        
+        # グローバル変数の状態を明示的に確認して出力
+        print(f"グローバル変数の最終状態: vector_store_available = {vector_store_available}")
+        if vector_store:
+            print(f"vector_store.available = {getattr(vector_store, 'available', 'undefined')}")
+            
         return vector_store
     except Exception as e:
         vector_store_available = False

@@ -113,9 +113,20 @@ class PineconeVectorStore:
 
     def upsert_documents(self, documents, ids=None):
         """ドキュメントを追加または更新"""
+        # REST API接続を再確認し、強制的に有効化
+        try:
+            rest_api_available = self._check_rest_api_connection()
+            if rest_api_available:
+                print("ドキュメントアップロード前: REST API接続が確認できました。利用可能に設定します。")
+                self.available = True
+                if hasattr(self, 'pinecone_client') and hasattr(self.pinecone_client, 'available'):
+                    self.pinecone_client.available = True
+        except Exception as e:
+            print(f"REST API接続確認中にエラー: {e}")
+            
         if not self.available:
             print("Pineconeが利用できないため、ドキュメントをアップロードできません")
-            return False
+            raise ValueError("ベクトルデータベースが利用できないため、ドキュメントをアップロードできません。REST API接続も失敗しました。")
         
         try:
             # Documentオブジェクトの場合とプレーンテキストの場合の両方に対応
@@ -161,56 +172,99 @@ class PineconeVectorStore:
                         print(f"{i+1}/{len(ids)}件のベクトル登録完了")
                     else:
                         print(f"{i+1}/{len(ids)}件のベクトル登録に失敗")
+                        # エラーが発生した場合、再度REST API接続を試みる
+                        rest_api_available = self._check_rest_api_connection()
+                        if rest_api_available:
+                            # 最後のバッチを再試行
+                            retry_success = self._upsert_batch(batch_vectors)
+                            if retry_success:
+                                print(f"再試行成功: {i+1}/{len(ids)}件のベクトル登録完了")
+                            else:
+                                print(f"再試行失敗: {i+1}/{len(ids)}件のベクトル登録に失敗")
+                                raise ValueError(f"バッチアップサートの再試行に失敗しました。(処理件数: {i+1}/{len(ids)})")
             
             print(f"合計{len(ids)}件のドキュメントをPineconeにアップロードしました")
             return True
         except Exception as e:
             print(f"ドキュメントのアップロード中にエラーが発生しました: {e}")
             print(traceback.format_exc())
-            return False
+            raise
 
     def _upsert_batch(self, vectors):
         """ベクトルのバッチをPineconeにアップロード"""
-        try:
-            # クライアントが利用可能かチェック
-            if not self.available or not hasattr(self.pinecone_client, 'available') or not self.pinecone_client.available:
-                print("Pineconeクライアントが利用できないため、ベクトルをアップロードできません")
-                return False
-            
-            # 公式SDKがある場合はSDKを使用
-            if hasattr(self.pinecone_client, 'index'):
-                try:
-                    self.pinecone_client.index.upsert(
-                        vectors=vectors,
-                        namespace=self.namespace
-                    )
+        max_retries = 3
+        retry_count = 0
+        
+        while retry_count < max_retries:
+            try:
+                # クライアントが利用可能かチェック
+                if not self.available or not hasattr(self.pinecone_client, 'available') or not self.pinecone_client.available:
+                    # 強制的に接続を確認
+                    rest_api_available = self._check_rest_api_connection()
+                    if rest_api_available:
+                        self.available = True
+                        if hasattr(self.pinecone_client, 'available'):
+                            self.pinecone_client.available = True
+                        print("_upsert_batch: REST API接続が確認できました。強制的に利用可能に設定します。")
+                    else:
+                        print("Pineconeクライアントが利用できないため、ベクトルをアップロードできません")
+                        return False
+                
+                # 公式SDKがある場合はSDKを使用
+                if hasattr(self.pinecone_client, 'index'):
+                    try:
+                        print("SDKを使用してベクトルをアップロード中...")
+                        self.pinecone_client.index.upsert(
+                            vectors=vectors,
+                            namespace=self.namespace
+                        )
+                        print("SDKを使用したアップロード成功")
+                        return True
+                    except Exception as e:
+                        print(f"SDK経由でのバッチアップサートエラー: {e}")
+                        print("REST APIでの代替処理を試みます...")
+                        
+                # REST APIでアップサート
+                print("REST APIを使用してベクトルをアップロード中...")
+                api_url = f"https://api.pinecone.io/vectors/upsert/{self.pinecone_client.index_name}"
+                data = {
+                    "vectors": vectors,
+                    "namespace": self.namespace
+                }
+                
+                response = self.pinecone_client._make_request(
+                    method="POST",
+                    url=api_url,
+                    json_data=data
+                )
+                
+                if response and response.status_code in [200, 201, 202]:
+                    print(f"REST APIを使用したアップロード成功: {response.status_code}")
                     return True
-                except Exception as e:
-                    print(f"SDK経由でのバッチアップサートエラー: {e}")
-                    print("REST APIでの代替処理を試みます...")
-                    
-            # REST APIでアップサート
-            api_url = f"https://api.pinecone.io/vectors/upsert/{self.pinecone_client.index_name}"
-            data = {
-                "vectors": vectors,
-                "namespace": self.namespace
-            }
-            
-            response = self.pinecone_client._make_request(
-                method="POST",
-                url=api_url,
-                json_data=data
-            )
-            
-            if response and response.status_code in [200, 201, 202]:
-                return True
-            else:
-                print(f"バッチアップサートエラー: {getattr(response, 'status_code', 'N/A')} - {getattr(response, 'text', 'No response')}")
-                return False
-        except Exception as e:
-            print(f"バッチアップサート中のエラー: {e}")
-            print(traceback.format_exc())
-            return False
+                else:
+                    print(f"バッチアップサートエラー: {getattr(response, 'status_code', 'N/A')} - {getattr(response, 'text', 'No response')}")
+                    # 500番台エラーの場合はリトライ
+                    status_code = getattr(response, 'status_code', 0)
+                    if 500 <= status_code < 600:
+                        retry_count += 1
+                        wait_time = 2 ** retry_count  # 指数バックオフ
+                        print(f"サーバーエラーのため {wait_time} 秒待機してリトライします ({retry_count}/{max_retries})...")
+                        time.sleep(wait_time)
+                        continue
+                    return False
+            except Exception as e:
+                print(f"バッチアップサート中のエラー: {e}")
+                print(traceback.format_exc())
+                retry_count += 1
+                if retry_count < max_retries:
+                    wait_time = 2 ** retry_count  # 指数バックオフ
+                    print(f"エラーのため {wait_time} 秒待機してリトライします ({retry_count}/{max_retries})...")
+                    time.sleep(wait_time)
+                else:
+                    return False
+        
+        print(f"最大リトライ回数 ({max_retries}) に達しました。アップロードは失敗しました。")
+        return False
 
     def delete_documents(self, ids):
         """ドキュメントを削除"""
