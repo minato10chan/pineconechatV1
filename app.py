@@ -240,6 +240,36 @@ def register_document(uploaded_file, additional_metadata=None):
     except Exception as e:
         print(f"ファイル処理エラー: {str(e)}")
         print(traceback.format_exc())
+        
+        # エラーメッセージを構築
+        error_msg = "ベクトルデータベースの接続でエラーが発生しました。\n\n"
+        error_msg += "デバッグ情報:\n"
+        error_msg += f"- vector_store_available: {vector_store_available}\n"
+        error_msg += f"- error_type: {type(e).__name__}\n"
+        error_msg += f"- error_message: {str(e)}\n\n"
+        
+        if vector_store:
+            error_msg += "VectorStore情報:\n"
+            error_msg += f"- available: {getattr(vector_store, 'available', 'undefined')}\n"
+            error_msg += f"- temporary_failure: {getattr(vector_store, 'temporary_failure', False)}\n"
+            error_msg += f"- is_streamlit_cloud: {getattr(vector_store, 'is_streamlit_cloud', False)}\n"
+            
+            if hasattr(vector_store, 'pinecone_client'):
+                client = vector_store.pinecone_client
+                error_msg += "\nPineconeクライアント情報:\n"
+                error_msg += f"- available: {getattr(client, 'available', 'undefined')}\n"
+                error_msg += f"- temporary_failure: {getattr(client, 'temporary_failure', False)}\n"
+                error_msg += f"- failed_attempts: {getattr(client, 'failed_attempts', 0)}\n"
+                error_msg += f"- initialization_error: {getattr(client, 'initialization_error', 'なし')}\n"
+        
+        error_msg += "\n接続問題を解決するオプション:\n"
+        error_msg += "1. インターネット接続が安定しているか確認してください\n"
+        error_msg += "2. Pinecone APIキーが正しく設定されているか確認してください\n"
+        error_msg += "3. インデックスが存在し、アクセス可能か確認してください\n"
+        error_msg += "4. 問題が解決しない場合は「緊急オフラインモード」を使用すると、一時的にメモリ内ストレージでアプリを使用できます\n"
+        
+        st.error(error_msg)
+        return False
 
 def manage_db():
     """
