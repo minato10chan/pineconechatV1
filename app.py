@@ -232,6 +232,24 @@ def register_document(uploaded_file, additional_metadata=None):
             logger.info(f"Pineconeクライアント状態: {getattr(client, 'available', 'undefined')}")
             logger.info(f"一時的障害モード: {getattr(client, 'temporary_failure', False)}")
     
+    # ベクトルストアの利用可能性チェック
+    if not vector_store or not vector_store_available:
+        error_msg = "ベクトルデータベースが利用できません。以下のいずれかの対応を行ってください：\n\n"
+        error_msg += "1. インターネット接続を確認してください\n"
+        error_msg += "2. Pinecone APIキーが正しく設定されているか確認してください\n"
+        error_msg += "3. インデックスが存在し、アクセス可能か確認してください\n"
+        error_msg += "4. 「緊急オフラインモード」を使用して一時的にメモリ内ストレージでアプリを使用する\n\n"
+        error_msg += "デバッグ情報:\n"
+        error_msg += f"- vector_store: {'存在する' if vector_store else 'None'}\n"
+        error_msg += f"- vector_store_available: {vector_store_available}\n"
+        if vector_store:
+            error_msg += f"- vector_store.available: {getattr(vector_store, 'available', 'undefined')}\n"
+            error_msg += f"- 緊急モード: {getattr(vector_store, 'temporary_failure', False)}\n"
+        
+        logger.error(error_msg)
+        st.error(error_msg)
+        return False
+    
     # ファイル処理の各ステップでログ出力
     try:
         if uploaded_file:
@@ -278,13 +296,26 @@ def register_document(uploaded_file, additional_metadata=None):
                         metadata.update(additional_metadata)
                     batch_metadata.append(metadata)
                 
-                # バッチの登録
-                success = vector_store.add_documents(current_batch)
-                
-                if success:
-                    logger.info(f"バッチ {batch_idx+1}/{total_batches} 処理完了: {time.time() - start_time:.2f}秒経過")
-                else:
-                    logger.error(f"バッチ {batch_idx+1}/{total_batches} 処理失敗: {time.time() - start_time:.2f}秒経過")
+                try:
+                    # バッチの登録
+                    success = vector_store.add_documents(current_batch)
+                    
+                    if success:
+                        logger.info(f"バッチ {batch_idx+1}/{total_batches} 処理完了: {time.time() - start_time:.2f}秒経過")
+                    else:
+                        logger.error(f"バッチ {batch_idx+1}/{total_batches} 処理失敗: {time.time() - start_time:.2f}秒経過")
+                        return False
+                except AttributeError as e:
+                    error_msg = f"ベクトルストアのメソッドが見つかりません: {str(e)}\n"
+                    error_msg += "ベクトルストアの初期化に問題がある可能性があります。"
+                    logger.error(error_msg)
+                    st.error(error_msg)
+                    return False
+                except Exception as e:
+                    error_msg = f"バッチ処理中にエラーが発生: {str(e)}\n"
+                    error_msg += "ベクトルストアの接続状態を確認してください。"
+                    logger.error(error_msg)
+                    st.error(error_msg)
                     return False
             
             logger.info(f"==== ファイル処理完了: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')}, 合計処理時間: {time.time() - start_time:.2f}秒 ====")
