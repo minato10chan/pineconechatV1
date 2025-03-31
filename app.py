@@ -124,6 +124,22 @@ def initialize_vector_store():
             vector_store = None
             raise
         
+        # 最終チェックとして、REST API接続が成功していれば、強制的に利用可能に設定
+        if not vector_store_available and vector_store and hasattr(vector_store, 'pinecone_client'):
+            client = vector_store.pinecone_client
+            print("REST API接続の最終チェックを実行中...")
+            try:
+                if hasattr(client, '_check_rest_api_connection'):
+                    if client._check_rest_api_connection():
+                        print("最終チェック: REST API接続が確認できました。強制的に利用可能に設定します。")
+                        vector_store_available = True
+                        vector_store.available = True
+                        if hasattr(client, 'available'):
+                            client.available = True
+                        print(f"接続状態の強制更新後: vector_store_available = {vector_store_available}")
+            except Exception as e:
+                print(f"REST API接続の最終チェック中にエラー: {e}")
+
         # セッション状態に保存
         st.session_state.vector_store = vector_store
         print(f"VectorStore initialization completed. Status: {'Available' if vector_store_available else 'Unavailable'}")
@@ -241,7 +257,7 @@ def manage_db():
     ベクトルデータベースを管理するページの関数。
     """
     # グローバル変数の宣言を最初に移動
-    global vector_store
+    global vector_store, vector_store_available
 
     st.header("ベクトルデータベース管理")
 
@@ -271,6 +287,29 @@ def manage_db():
                 error_message += f"\n- インデックス名: {client.index_name}"
         
         st.error(error_message)
+        
+        # デバッグ情報を追加
+        st.write("## デバッグ情報")
+        st.write(f"vector_store_available: {vector_store_available}")
+        if vector_store:
+            st.write("vector_storeオブジェクト情報:")
+            st.write(f"- 型: {type(vector_store)}")
+            st.write(f"- 利用可能: {getattr(vector_store, 'available', 'undefined')}")
+            if hasattr(vector_store, 'pinecone_client'):
+                client = vector_store.pinecone_client
+                st.write("Pineconeクライアント情報:")
+                st.write(f"- 型: {type(client)}")
+                st.write(f"- 利用可能: {getattr(client, 'available', 'undefined')}")
+                st.write(f"- REST API接続: {hasattr(client, '_check_rest_api_connection')}")
+                # REST API接続をテストして結果を表示
+                if hasattr(client, '_check_rest_api_connection'):
+                    try:
+                        rest_api_status = client._check_rest_api_connection()
+                        st.write(f"- REST API接続テスト結果: {rest_api_status}")
+                    except Exception as e:
+                        st.write(f"- REST API接続テスト中にエラー: {str(e)}")
+                if hasattr(client, 'initialization_error'):
+                    st.write(f"- 初期化エラー: {client.initialization_error}")
         
         # リトライボタンを提供
         if st.button("接続を再試行"):
@@ -652,3 +691,29 @@ elif page == "プロンプト管理":
     prompt_management()
 elif page == "ダッシュボード":
     dashboard()
+
+# アプリケーション起動時のセッション状態初期化
+import streamlit as st
+import traceback
+
+# セッション状態のリセット
+if 'force_reset' not in st.session_state:
+    print("セッション状態の初期化を実行中...")
+    for key in ['vector_store', 'vector_store_initialized']:
+        if key in st.session_state:
+            print(f"セッション状態から {key} を削除")
+            del st.session_state[key]
+    st.session_state.force_reset = True
+    print("セッション状態の初期化完了")
+
+# 設定とパフォーマンスの確認
+import os
+# Pinecone接続タイムアウトの設定
+os.environ['PINECONE_REQUEST_TIMEOUT'] = '60'  # 秒単位でタイムアウトを設定
+print(f"Pineconeリクエストタイムアウトを {os.environ.get('PINECONE_REQUEST_TIMEOUT', '設定なし')} 秒に設定")
+
+# デバッグ情報をログに出力
+print("システム情報:")
+import platform
+print(f"- Python バージョン: {platform.python_version()}")
+print(f"- プラットフォーム: {platform.platform()}")
