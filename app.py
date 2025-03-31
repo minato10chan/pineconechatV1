@@ -244,9 +244,14 @@ def register_document(uploaded_file, additional_metadata=None):
     global vector_store, vector_store_available
     
     # ファイルアップロード処理のログ追加
-    logger.info(f"==== ファイルアップロード処理開始: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')} ====")
-    if uploaded_file:
-        logger.info(f"ファイル名: {uploaded_file.name}, サイズ: {uploaded_file.size}バイト")
+    logger.info("="*50)
+    logger.info(f"ファイルアップロード処理開始: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')}")
+    logger.info(f"ファイル情報:")
+    logger.info(f"- ファイル名: {uploaded_file.name}")
+    logger.info(f"- ファイルタイプ: {uploaded_file.type}")
+    logger.info(f"- ファイルサイズ: {uploaded_file.size:,} bytes")
+    logger.info(f"- アップロード時刻: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logger.info("="*50)
     
     # タイムアウト設定
     upload_timeout = 120
@@ -254,7 +259,7 @@ def register_document(uploaded_file, additional_metadata=None):
     logger.info(f"処理タイムアウト設定: {upload_timeout}秒")
     
     # デバッグコンテナ
-    debug_container = st.expander("デバッグ情報", expanded=False)
+    debug_container = st.expander("デバッグ情報", expanded=True)
     
     # 接続状態のログ
     logger.info(f"ベクトルDB接続状態: {'有効' if vector_store_available else '無効'}")
