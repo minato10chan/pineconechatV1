@@ -844,6 +844,40 @@ def dashboard():
 
 # サイドバーメニュー
 st.sidebar.title("メニュー")
+
+# ログ表示用のエクスパンダーを追加
+with st.sidebar.expander("アプリケーションログ", expanded=True):
+    # ログファイルの内容を読み込んで表示
+    log_dir = "logs"
+    if os.path.exists(log_dir):
+        log_files = [f for f in os.listdir(log_dir) if f.endswith('.log')]
+        if log_files:
+            # 最新のログファイルを選択
+            latest_log = max(log_files, key=lambda x: os.path.getctime(os.path.join(log_dir, x)))
+            log_path = os.path.join(log_dir, latest_log)
+            
+            try:
+                with open(log_path, 'r', encoding='utf-8') as f:
+                    # 最新の100行のみを表示
+                    log_lines = f.readlines()[-100:]
+                    for line in log_lines:
+                        # エラーログは赤色で表示
+                        if "ERROR" in line:
+                            st.error(line.strip())
+                        # 警告ログは黄色で表示
+                        elif "WARNING" in line:
+                            st.warning(line.strip())
+                        # その他のログは通常表示
+                        else:
+                            st.text(line.strip())
+            except Exception as e:
+                st.error(f"ログファイルの読み込み中にエラーが発生しました: {str(e)}")
+        else:
+            st.info("ログファイルが見つかりません")
+    else:
+        st.info("ログディレクトリが存在しません")
+
+# メニュー選択
 page = st.sidebar.radio(
     "ページを選択",
     ["ドキュメントに質問する", "ベクトルDB管理", "プロンプト管理", "ダッシュボード"]
