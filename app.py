@@ -188,164 +188,71 @@ if 'vector_store_initialized' not in st.session_state:
     st.session_state.vector_store_initialized = True
     logger.info("アプリケーションの初期化が完了しました")
 
-def register_document(uploaded_file, additional_metadata=None):
-    """
-    アップロードされたファイルをベクトルデータベースに登録する関数。
-    additional_metadata: 追加のメタデータ辞書
-    """
-    # グローバル変数の宣言を最初に移動
-    global vector_store, vector_store_available
-    
-    # ファイルアップロード処理のログ追加
-    logger.info("="*50)
-    logger.info(f"ファイルアップロード処理開始: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')}")
-    logger.info(f"ファイル情報:")
-    logger.info(f"- ファイル名: {uploaded_file.name}")
-    logger.info(f"- ファイルタイプ: {uploaded_file.type}")
-    logger.info(f"- ファイルサイズ: {uploaded_file.size:,} bytes")
-    logger.info(f"- アップロード時刻: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    logger.info("="*50)
-    
-    # タイムアウト設定
-    upload_timeout = 120
-    start_time = time.time()
-    logger.info(f"処理タイムアウト設定: {upload_timeout}秒")
-    
-    # デバッグコンテナ
-    debug_container = st.expander("デバッグ情報", expanded=True)
-    
-    # 接続状態のログ
-    logger.info(f"ベクトルDB接続状態: {'有効' if vector_store_available else '無効'}")
-    if vector_store:
-        logger.info(f"vector_store.available: {getattr(vector_store, 'available', 'undefined')}")
-        logger.info(f"緊急モード: {getattr(vector_store, 'temporary_failure', False)}")
-        
-        if hasattr(vector_store, 'pinecone_client'):
-            client = vector_store.pinecone_client
-            logger.info(f"Pineconeクライアント状態: {getattr(client, 'available', 'undefined')}")
-            logger.info(f"一時的障害モード: {getattr(client, 'temporary_failure', False)}")
-    
-    # ベクトルストアの利用可能性チェック
-    if not vector_store or not vector_store_available:
-        error_msg = "ベクトルデータベースが利用できません。以下のいずれかの対応を行ってください：\n\n"
-        error_msg += "1. インターネット接続を確認してください\n"
-        error_msg += "2. Pinecone APIキーが正しく設定されているか確認してください\n"
-        error_msg += "3. インデックスが存在し、アクセス可能か確認してください\n"
-        error_msg += "4. 「緊急オフラインモード」を使用して一時的にメモリ内ストレージでアプリを使用する\n\n"
-        error_msg += "デバッグ情報:\n"
-        error_msg += f"- vector_store: {'存在する' if vector_store else 'None'}\n"
-        error_msg += f"- vector_store_available: {vector_store_available}\n"
-        if vector_store:
-            error_msg += f"- vector_store.available: {getattr(vector_store, 'available', 'undefined')}\n"
-            error_msg += f"- 緊急モード: {getattr(vector_store, 'temporary_failure', False)}\n"
-        
-        logger.error(error_msg)
-        st.error(error_msg)
-        return False
-    
-    # ファイル処理の各ステップでログ出力
+def register_document(uploaded_file):
+    """アップロードされたファイルをドキュメントとして登録"""
     try:
-        if uploaded_file:
-            logger.info(f"ファイル読み込み開始: {time.time() - start_time:.2f}秒経過")
-            
-            # ファイルの内容を読み込む
-            content = uploaded_file.read().decode('utf-8')
-            
-            # テキストを分割
-            text_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=1000,
-                chunk_overlap=200,
-                length_function=len,
-                separators=["\n\n", "\n", " ", ""]
-            )
-            texts = text_splitter.split_text(content)
-            
-            # バッチサイズの設定
-            BATCH_SIZE = 100
-            total_batches = (len(texts) + BATCH_SIZE - 1) // BATCH_SIZE
-            
-            # バッチ処理の開始前にログ
-            logger.info(f"ベクトルDB登録処理開始: {time.time() - start_time:.2f}秒経過")
-            logger.info(f"総テキスト数: {len(texts)}, バッチ数: {total_batches}")
-            
-            # 各バッチ処理でログ
-            for batch_idx in range(total_batches):
-                start_idx = batch_idx * BATCH_SIZE
-                end_idx = min((batch_idx + 1) * BATCH_SIZE, len(texts))
-                current_batch = texts[start_idx:end_idx]
-                
-                logger.info(f"バッチ {batch_idx+1}/{total_batches} 処理開始: {time.time() - start_time:.2f}秒経過")
-                logger.info(f"バッチサイズ: {len(current_batch)}")
-                
-                # メタデータの準備
-                batch_metadata = []
-                for text in current_batch:
-                    metadata = {
-                        "source": uploaded_file.name,
-                        "chunk_index": len(batch_metadata),
-                        "timestamp": datetime.datetime.now().isoformat()
-                    }
-                    if additional_metadata:
-                        metadata.update(additional_metadata)
-                    batch_metadata.append(metadata)
-                
-                try:
-                    # バッチの登録
-                    success = vector_store.add_documents(current_batch)
-                    
-                    if success:
-                        logger.info(f"バッチ {batch_idx+1}/{total_batches} 処理完了: {time.time() - start_time:.2f}秒経過")
-                    else:
-                        logger.error(f"バッチ {batch_idx+1}/{total_batches} 処理失敗: {time.time() - start_time:.2f}秒経過")
-                        return False
-                except AttributeError as e:
-                    error_msg = f"ベクトルストアのメソッドが見つかりません: {str(e)}\n"
-                    error_msg += "ベクトルストアの初期化に問題がある可能性があります。"
-                    logger.error(error_msg)
-                    st.error(error_msg)
-                    return False
-                except Exception as e:
-                    error_msg = f"バッチ処理中にエラーが発生: {str(e)}\n"
-                    error_msg += "ベクトルストアの接続状態を確認してください。"
-                    logger.error(error_msg)
-                    st.error(error_msg)
-                    return False
-            
-            logger.info(f"==== ファイル処理完了: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')}, 合計処理時間: {time.time() - start_time:.2f}秒 ====")
-            return True
-            
+        logger.info("ファイルアップロード処理開始: %s", datetime.now())
+        logger.info("ファイル情報:")
+        logger.info("- ファイル名: %s", uploaded_file.name)
+        logger.info("- ファイルタイプ: %s", uploaded_file.type)
+        logger.info("- ファイルサイズ: %s bytes", uploaded_file.size)
+        logger.info("- アップロード時刻: %s", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        logger.info("=" * 50)
+
+        # 処理タイムアウトの設定
+        timeout = 120  # 秒
+        logger.info("処理タイムアウト設定: %d秒", timeout)
+
+        # ベクトルDBの接続状態を確認
+        vector_store = get_vector_store()
+        logger.info("ベクトルDB接続状態: %s", "有効" if vector_store.available else "無効")
+        logger.info("vector_store.available: %s", vector_store.available)
+        logger.info("緊急モード: %s", vector_store.temporary_failure)
+        logger.info("Pineconeクライアント状態: %s", getattr(vector_store.pinecone_client, 'available', False))
+        logger.info("一時的障害モード: %s", vector_store.temporary_failure)
+
+        # ファイル読み込み開始時刻を記録
+        start_time = time.time()
+        logger.info("ファイル読み込み開始: %.2f秒経過", time.time() - start_time)
+
+        # ファイルの内容を読み込む（複数のエンコーディングを試行）
+        encodings = ['utf-8', 'shift-jis', 'cp932', 'euc-jp', 'iso-2022-jp']
+        content = None
+        
+        for encoding in encodings:
+            try:
+                # ファイルポインタを先頭に戻す
+                uploaded_file.seek(0)
+                content = uploaded_file.read().decode(encoding)
+                logger.info("ファイルを %s エンコーディングで読み込み成功", encoding)
+                break
+            except UnicodeDecodeError:
+                logger.warning("%s エンコーディングでの読み込みに失敗", encoding)
+                continue
+        
+        if content is None:
+            raise ValueError("ファイルの文字エンコーディングを特定できませんでした")
+
+        # ファイル読み込み完了時刻を記録
+        logger.info("ファイル読み込み完了: %.2f秒経過", time.time() - start_time)
+
+        # ドキュメントの登録
+        if vector_store.available:
+            success = vector_store.upsert_documents([content])
+            if success:
+                logger.info("ドキュメントの登録が完了しました")
+                return True
+            else:
+                logger.error("ドキュメントの登録に失敗しました")
+                return False
+        else:
+            logger.error("ベクトルDBが利用できません")
+            return False
+
     except Exception as e:
-        logger.error(f"ファイル処理エラー: {str(e)}")
+        logger.error("ファイル処理エラー: %s", str(e))
         logger.error(traceback.format_exc())
-        
-        # エラーメッセージを構築
-        error_msg = "ベクトルデータベースの接続でエラーが発生しました。\n\n"
-        error_msg += "デバッグ情報:\n"
-        error_msg += f"- vector_store_available: {vector_store_available}\n"
-        error_msg += f"- error_type: {type(e).__name__}\n"
-        error_msg += f"- error_message: {str(e)}\n\n"
-        
-        if vector_store:
-            error_msg += "VectorStore情報:\n"
-            error_msg += f"- available: {getattr(vector_store, 'available', 'undefined')}\n"
-            error_msg += f"- temporary_failure: {getattr(vector_store, 'temporary_failure', False)}\n"
-            error_msg += f"- is_streamlit_cloud: {getattr(vector_store, 'is_streamlit_cloud', False)}\n"
-            
-            if hasattr(vector_store, 'pinecone_client'):
-                client = vector_store.pinecone_client
-                error_msg += "\nPineconeクライアント情報:\n"
-                error_msg += f"- available: {getattr(client, 'available', 'undefined')}\n"
-                error_msg += f"- temporary_failure: {getattr(client, 'temporary_failure', False)}\n"
-                error_msg += f"- failed_attempts: {getattr(client, 'failed_attempts', 0)}\n"
-                error_msg += f"- initialization_error: {getattr(client, 'initialization_error', 'なし')}\n"
-        
-        error_msg += "\n接続問題を解決するオプション:\n"
-        error_msg += "1. インターネット接続が安定しているか確認してください\n"
-        error_msg += "2. Pinecone APIキーが正しく設定されているか確認してください\n"
-        error_msg += "3. インデックスが存在し、アクセス可能か確認してください\n"
-        error_msg += "4. 問題が解決しない場合は「緊急オフラインモード」を使用すると、一時的にメモリ内ストレージでアプリを使用できます\n"
-        
-        st.error(error_msg)
+        logger.error("ドキュメント登録に失敗しました")
         return False
 
 def manage_db():
@@ -466,7 +373,7 @@ def manage_db():
                 logger.info(f"メタデータ: {metadata}")
                 
                 # ドキュメント登録関数を呼び出し
-                if register_document(uploaded_file, additional_metadata=metadata):
+                if register_document(uploaded_file):
                     logger.info("ドキュメント登録が完了しました")
                     st.success("ドキュメントの登録が完了しました！")
                 else:
