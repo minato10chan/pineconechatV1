@@ -9,6 +9,7 @@ import time
 import uuid
 from datetime import datetime
 import logging
+import requests
 
 # 環境変数のロード
 load_dotenv()
@@ -164,282 +165,112 @@ class PineconeVectorStore:
         """ドキュメントを更新"""
         return self.upsert_documents(documents)
 
-    def upsert_documents(self, documents, ids=None):
-        """ドキュメントを追加または更新"""
-        # 緊急モード検出：Streamlit Cloud環境で一時的な障害がある場合
-        emergency_mode = self.is_streamlit_cloud and self.temporary_failure
-        if emergency_mode:
-            logger.info("緊急オフラインモード: ドキュメントをメモリ内ストレージに保存します")
-        elif not self.available:
-            # REST API接続を再確認し、強制的に有効化
-            try:
-                rest_api_available = self._check_rest_api_connection()
-                if rest_api_available:
-                    logger.info("ドキュメントアップロード前: REST API接続が確認できました。利用可能に設定します。")
-                    self.available = True
-                    if hasattr(self, 'pinecone_client') and hasattr(self.pinecone_client, 'available'):
-                        self.pinecone_client.available = True
-                else:
-                    logger.error("ドキュメントアップロード前: REST API接続の確認に失敗しました")
-                    logger.error("接続状態の詳細:")
-                    logger.error(f"- vector_store_available: {self.available}")
-                    logger.error(f"- pinecone_client_available: {getattr(self.pinecone_client, 'available', False)}")
-                    logger.error(f"- temporary_failure: {self.temporary_failure}")
-                    logger.error(f"- is_streamlit_cloud: {self.is_streamlit_cloud}")
-            except Exception as e:
-                logger.error(f"REST API接続確認中にエラー: {e}")
-                logger.error(traceback.format_exc())
-                
-            # 通常モードで利用できない場合はエラー
-            if not self.available and not emergency_mode:
-                error_msg = "ベクトルデータベースが利用できないため、ドキュメントをアップロードできません。"
-                error_msg += "\nREST API接続も失敗しました。"
-                error_msg += "\n\nデバッグ情報:"
-                error_msg += f"\n- vector_store_available: {self.available}"
-                error_msg += f"\n- pinecone_client_available: {getattr(self.pinecone_client, 'available', False)}"
-                error_msg += f"\n- temporary_failure: {self.temporary_failure}"
-                error_msg += f"\n- is_streamlit_cloud: {self.is_streamlit_cloud}"
-                logger.error(error_msg)
-                raise ValueError(error_msg)
-        
+    def upsert_documents(self, texts, metadatas=None):
+        """
+        ドキュメントをPineconeにアップロードする
+        """
         try:
-            # Documentオブジェクトの場合とプレーンテキストの場合の両方に対応
-            if hasattr(documents[0], 'page_content'):
-                # Documentオブジェクトの場合
-                texts = [doc.page_content for doc in documents]
-                metadatas = [doc.metadata for doc in documents]
-            else:
-                # プレーンテキストの場合
-                texts = documents
-                metadatas = [{} for _ in documents]
-            
-            # IDsの生成または使用
-            if ids is None:
-                ids = [f"doc_{i}_{uuid.uuid4()}" for i in range(len(documents))]
-            
             # 埋め込みベクトルの生成
             logger.info(f"{len(texts)}件のドキュメントの埋め込みベクトルを生成中...")
             embeddings = self.embeddings.embed_documents(texts)
             
-            # 緊急オフラインモードの場合、メモリに保存して成功を返す
-            if emergency_mode:
-                for i, (id_, text, metadata, embedding) in enumerate(zip(ids, texts, metadatas, embeddings)):
-                    # メタデータにテキスト内容を含める
-                    metadata['text'] = text
-                    
-                    # オフラインストレージに保存
-                    self.offline_storage["ids"].append(id_)
-                    self.offline_storage["vectors"].append(embedding)
-                    self.offline_storage["metadata"].append(metadata)
-                    
-                    if (i + 1) % 10 == 0 or i == len(ids) - 1:
-                        logger.info(f"緊急モード: {i+1}/{len(ids)}件のベクトルをメモリ内ストレージに保存しました")
-                
-                logger.info(f"緊急モード: 合計{len(ids)}件のドキュメントをメモリ内に保存しました")
-                return True
+            # ベクトルIDの生成
+            ids = [f"doc_{i}_{uuid.uuid4()}" for i in range(len(texts))]
             
-            # 通常のPinecone処理（既存のコード）
-            # Pineconeに登録するベクトル配列を作成
+            # メタデータの準備
+            if metadatas is None:
+                metadatas = [{} for _ in texts]
+            
+            # ベクトルデータの準備
             vectors = []
-            for i, (id_, text, metadata, embedding) in enumerate(zip(ids, texts, metadatas, embeddings)):
-                # メタデータにテキスト内容を含める
-                metadata['text'] = text
-                
-                # ベクトルエントリを作成
-                vector_entry = {
-                    "id": id_,
+            for i, (text, embedding, metadata) in enumerate(zip(texts, embeddings, metadatas)):
+                vector = {
+                    "id": ids[i],
                     "values": embedding,
-                    "metadata": metadata
+                    "metadata": {
+                        "text": text,
+                        **metadata
+                    }
                 }
-                vectors.append(vector_entry)
+                vectors.append(vector)
+            
+            # バッチサイズの設定
+            BATCH_SIZE = 100
+            total_batches = (len(vectors) + BATCH_SIZE - 1) // BATCH_SIZE
+            
+            # バッチ処理
+            for batch_idx in range(total_batches):
+                start_idx = batch_idx * BATCH_SIZE
+                end_idx = min((batch_idx + 1) * BATCH_SIZE, len(vectors))
+                current_batch = vectors[start_idx:end_idx]
                 
-                # 100件ごとにバッチアップサート（Pineconeの制限対応）
-                if (i + 1) % 100 == 0 or i == len(ids) - 1:
-                    batch_vectors = vectors[:100]
-                    vectors = vectors[100:]
-                    
-                    # REST APIまたはSDKでアップサート
-                    success = self._upsert_batch(batch_vectors)
-                    if success:
-                        logger.info(f"{i+1}/{len(ids)}件のベクトル登録完了")
-                    else:
-                        logger.error(f"{i+1}/{len(ids)}件のベクトル登録に失敗")
-                        # エラーが発生した場合、再度REST API接続を試みる
-                        rest_api_available = self._check_rest_api_connection()
-                        if rest_api_available:
-                            # 最後のバッチを再試行
-                            retry_success = self._upsert_batch(batch_vectors)
-                            if retry_success:
-                                logger.info(f"再試行成功: {i+1}/{len(ids)}件のベクトル登録完了")
-                            else:
-                                logger.error(f"再試行失敗: {i+1}/{len(ids)}件のベクトル登録に失敗")
-                                raise ValueError(f"バッチアップサートの再試行に失敗しました。(処理件数: {i+1}/{len(ids)})")
-            
-            logger.info(f"合計{len(ids)}件のドキュメントをPineconeにアップロードしました")
-            return True
-        except Exception as e:
-            logger.error(f"ドキュメントのアップロード中にエラーが発生しました: {e}")
-            logger.error(traceback.format_exc())
-            
-            # 例外発生時、緊急モードを有効化
-            if self.is_streamlit_cloud and not self.temporary_failure:
-                logger.info("例外発生により緊急オフラインモードに切り替えます。次回の実行でメモリ内ストレージを使用します。")
-                self.temporary_failure = True
-                if hasattr(self.pinecone_client, 'temporary_failure'):
-                    self.pinecone_client.temporary_failure = True
-                    self.pinecone_client.failed_attempts = 3  # 強制的に失敗状態にする
-            
-            raise
-
-    def _upsert_batch(self, vectors):
-        """ベクトルのバッチをPineconeにアップロード"""
-        max_retries = 3
-        retry_count = 0
-        
-        # デバッグ用に詳細情報を記録
-        debug_info = {
-            "batch_size": len(vectors),
-            "retry_attempts": 0,
-            "errors": [],
-            "success": False,
-            "responses": []
-        }
-        
-        while retry_count < max_retries:
-            try:
-                # クライアントが利用可能かチェック
-                if not self.available or not hasattr(self.pinecone_client, 'available') or not self.pinecone_client.available:
-                    # 強制的に接続を確認
-                    rest_api_available = self._check_rest_api_connection()
-                    if rest_api_available:
-                        self.available = True
-                        if hasattr(self.pinecone_client, 'available'):
-                            self.pinecone_client.available = True
-                        logger.info("_upsert_batch: REST API接続が確認できました。強制的に利用可能に設定します。")
-                    else:
-                        logger.error("Pineconeクライアントが利用できないため、ベクトルをアップロードできません")
-                        debug_info["errors"].append({
-                            "stage": "availability_check",
-                            "message": "Pineconeクライアントが利用できません",
-                            "client_available": getattr(self.pinecone_client, 'available', False),
-                            "self_available": self.available
-                        })
-                        return False
+                # リトライロジックの改善
+                max_retries = 5
+                base_delay = 2
+                last_error = None
                 
-                # 公式SDKがある場合はSDKを使用
-                if hasattr(self.pinecone_client, 'index'):
+                for attempt in range(max_retries):
                     try:
-                        logger.info("SDKを使用してベクトルをアップロード中...")
-                        logger.info(f"バッチサイズ: {len(vectors)}、名前空間: {self.namespace}")
+                        logger.info(f"REST APIを使用してベクトルをアップロード中... (バッチ {batch_idx+1}/{total_batches}, 試行 {attempt+1}/{max_retries})")
                         
-                        # SDK呼び出し前の状態をログ記録
-                        debug_info["sdk_attempt"] = {
-                            "namespace": self.namespace,
-                            "num_vectors": len(vectors),
-                            "has_pinecone_index": hasattr(self.pinecone_client, 'index')
+                        # リクエストヘッダーの設定
+                        headers = {
+                            "Api-Key": self.api_key,
+                            "Accept": "application/json",
+                            "Content-Type": "application/json"
                         }
                         
-                        self.pinecone_client.index.upsert(
-                            vectors=vectors,
-                            namespace=self.namespace
-                        )
-                        logger.info("SDKを使用したアップロード成功")
-                        debug_info["success"] = True
-                        debug_info["method"] = "sdk"
-                        return True
-                    except Exception as e:
-                        logger.error(f"SDK経由でのバッチアップサートエラー: {e}")
-                        logger.error(f"エラータイプ: {type(e).__name__}")
-                        logger.error(traceback.format_exc())
-                        debug_info["errors"].append({
-                            "stage": "sdk_upsert",
-                            "message": str(e),
-                            "error_type": type(e).__name__,
-                            "traceback": traceback.format_exc()
-                        })
-                        logger.info("REST APIでの代替処理を試みます...")
+                        # リクエストデータの準備
+                        data = {
+                            "vectors": current_batch,
+                            "namespace": self.namespace
+                        }
                         
-                # REST APIでアップサート
-                logger.info("REST APIを使用してベクトルをアップロード中...")
-                api_url = f"https://api.pinecone.io/vectors/upsert/{self.pinecone_client.index_name}"
-                data = {
-                    "vectors": vectors,
-                    "namespace": self.namespace
-                }
+                        # リクエストの送信
+                        response = requests.post(
+                            f"{self.base_url}/vectors/upsert/{self.index_name}",
+                            headers=headers,
+                            json=data,
+                            timeout=30 * (attempt + 1)  # タイムアウトを徐々に増加
+                        )
+                        
+                        # レスポンスの確認
+                        if response.status_code == 200:
+                            logger.info(f"バッチ {batch_idx+1}/{total_batches} のアップロード成功")
+                            break
+                        elif response.status_code == 429:  # Rate limit
+                            delay = base_delay * (2 ** attempt)  # 指数バックオフ
+                            logger.warning(f"レート制限に達しました。{delay}秒後に再試行します...")
+                            time.sleep(delay)
+                        elif response.status_code == 500:  # Server error
+                            delay = base_delay * (2 ** attempt)
+                            logger.warning(f"サーバーエラー (500): {delay}秒後に再試行します...")
+                            time.sleep(delay)
+                        else:
+                            error_msg = f"予期せぬエラー: {response.status_code} - {response.text}"
+                            logger.error(error_msg)
+                            last_error = error_msg
+                            
+                    except requests.exceptions.RequestException as e:
+                        delay = base_delay * (2 ** attempt)
+                        logger.warning(f"リクエストエラー: {str(e)}。{delay}秒後に再試行します...")
+                        time.sleep(delay)
+                        last_error = str(e)
                 
-                # APIリクエスト前の状態をログ記録
-                debug_info["rest_attempt"] = {
-                    "url": api_url,
-                    "namespace": self.namespace,
-                    "num_vectors": len(vectors),
-                    "data_size": len(json.dumps(data))
-                }
-                
-                response = self.pinecone_client._make_request(
-                    method="POST",
-                    url=api_url,
-                    json_data=data
-                )
-                
-                # レスポンス情報を記録
-                response_info = {
-                    "status_code": getattr(response, 'status_code', None),
-                    "response_text": getattr(response, 'text', '')[:500] # 長いレスポンスは切り詰める
-                }
-                debug_info["responses"].append(response_info)
-                
-                if response and response.status_code in [200, 201, 202]:
-                    logger.info(f"REST APIを使用したアップロード成功: {response.status_code}")
-                    debug_info["success"] = True
-                    debug_info["method"] = "rest_api"
-                    return True
-                else:
-                    logger.error(f"バッチアップサートエラー: {getattr(response, 'status_code', 'N/A')} - {getattr(response, 'text', 'No response')[:200]}")
-                    
-                    # エラー詳細をログに記録
-                    debug_info["errors"].append({
-                        "stage": "rest_api_response",
-                        "status_code": getattr(response, 'status_code', None),
-                        "response_text": getattr(response, 'text', '')[:500]
-                    })
-                    
-                    # 500番台エラーの場合はリトライ
-                    status_code = getattr(response, 'status_code', 0)
-                    if 500 <= status_code < 600:
-                        retry_count += 1
-                        debug_info["retry_attempts"] += 1
-                        wait_time = 2 ** retry_count  # 指数バックオフ
-                        logger.info(f"サーバーエラーのため {wait_time} 秒待機してリトライします ({retry_count}/{max_retries})...")
-                        time.sleep(wait_time)
-                        continue
-                    return False
-            except Exception as e:
-                logger.error(f"バッチアップサート中のエラー: {e}")
-                logger.error(f"エラータイプ: {type(e).__name__}")
-                logger.error(traceback.format_exc())
-                
-                # エラー詳細をログに記録
-                debug_info["errors"].append({
-                    "stage": "general_exception",
-                    "message": str(e),
-                    "error_type": type(e).__name__,
-                    "traceback": traceback.format_exc()
-                })
-                
-                retry_count += 1
-                debug_info["retry_attempts"] += 1
-                if retry_count < max_retries:
-                    wait_time = 2 ** retry_count  # 指数バックオフ
-                    logger.info(f"エラーのため {wait_time} 秒待機してリトライします ({retry_count}/{max_retries})...")
-                    time.sleep(wait_time)
-                else:
-                    # 詳細なエラー情報をログに残す
-                    logger.error(f"最大リトライ回数に達しました。デバッグ情報: {json.dumps(debug_info, default=str)}")
-                    return False
-        
-        logger.error(f"最大リトライ回数 ({max_retries}) に達しました。アップロードは失敗しました。")
-        logger.error(f"詳細なデバッグ情報: {json.dumps(debug_info, default=str)}")
-        return False
+                # すべての試行が失敗した場合
+                if attempt == max_retries - 1:
+                    error_msg = f"バッチ {batch_idx+1}/{total_batches} のアップロードに失敗しました。"
+                    error_msg += f"\n最後のエラー: {last_error}"
+                    logger.error(error_msg)
+                    raise ValueError(error_msg)
+            
+            logger.info("すべてのバッチのアップロードが完了しました")
+            return True
+            
+        except Exception as e:
+            logger.error(f"ドキュメントのアップロード中にエラーが発生しました: {str(e)}")
+            logger.error(traceback.format_exc())
+            return False
 
     def delete_documents(self, ids):
         """ドキュメントを削除"""
