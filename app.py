@@ -191,12 +191,12 @@ if 'vector_store_initialized' not in st.session_state:
 def register_document(uploaded_file):
     """アップロードされたファイルをドキュメントとして登録"""
     try:
-        logger.info("ファイルアップロード処理開始: %s", datetime.now())
+        logger.info("ファイルアップロード処理開始: %s", datetime.datetime.now())
         logger.info("ファイル情報:")
         logger.info("- ファイル名: %s", uploaded_file.name)
         logger.info("- ファイルタイプ: %s", uploaded_file.type)
         logger.info("- ファイルサイズ: %s bytes", uploaded_file.size)
-        logger.info("- アップロード時刻: %s", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+        logger.info("- アップロード時刻: %s", datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
         logger.info("=" * 50)
 
         # 処理タイムアウトの設定
