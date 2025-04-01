@@ -357,6 +357,12 @@ def manage_db():
 
     logger.info("="*50)
     logger.info(f"ベクトルDB管理ページを開く: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    
+    # ベクトルストアの状態を再確認
+    if not vector_store or not vector_store_available:
+        logger.warning("ベクトルストアが利用できないため、再初期化を試みます")
+        initialize_vector_store()
+    
     logger.info(f"現在の状態:")
     logger.info(f"- vector_store_available: {vector_store_available}")
     if vector_store:
@@ -379,9 +385,13 @@ def manage_db():
                 with st.spinner("Pinecone接続状態を確認中..."):
                     api_test_result = client._check_rest_api_connection()
                     logger.info(f"Pinecone REST API接続テスト結果: {api_test_result}")
+                    if not api_test_result:
+                        logger.warning("Pinecone接続テストに失敗しました")
+                        st.warning("Pineconeへの接続に問題があります。一部の機能が制限される可能性があります。")
     except Exception as e:
         logger.error(f"ページロード時の接続確認エラー: {e}")
         logger.error(traceback.format_exc())
+        st.error("接続状態の確認中にエラーが発生しました")
 
     # デバッグモードの表示
     if 'debug_mode' in st.session_state and st.session_state.debug_mode:
@@ -407,6 +417,14 @@ def manage_db():
     if uploaded_file:
         logger.info(f"ファイルアップロード検知: {uploaded_file.name}")
         logger.info(f"ファイル情報: タイプ={uploaded_file.type}, サイズ={uploaded_file.size:,} bytes")
+        
+        # ベクトルストアの状態を再確認
+        if not vector_store or not vector_store_available:
+            logger.warning("ファイルアップロード時にベクトルストアが利用できないため、再初期化を試みます")
+            initialize_vector_store()
+            if not vector_store_available:
+                st.error("ベクトルストアの接続に問題があります。緊急オフラインモードを使用するか、接続を確認してください。")
+                return
         
         # メタデータ入力フォーム
         with st.expander("メタデータ入力", expanded=True):
