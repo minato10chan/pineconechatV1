@@ -10,6 +10,7 @@ import uuid
 from datetime import datetime
 import logging
 import requests
+import math
 
 # 環境変数のロード
 load_dotenv()
@@ -219,6 +220,50 @@ class PineconeVectorStore:
                 }
                 vectors.append(vector)
             
+            # デバッグ情報の出力
+            logger.info("=== デバッグ情報 ===")
+            logger.info(f"インデックス名: {self.index_name}")
+            logger.info(f"名前空間: {self.namespace if self.namespace else 'デフォルト'}")
+            logger.info(f"ベクトル数: {len(vectors)}")
+            logger.info(f"埋め込み次元数: {len(embeddings[0])}")
+            
+            # インデックスの状態確認
+            try:
+                if hasattr(self.pinecone_client, 'index'):
+                    stats = self.pinecone_client.index.describe_index_stats()
+                    logger.info("インデックス統計:")
+                    logger.info(f"- 総ベクトル数: {stats.total_vector_count}")
+                    logger.info(f"- 名前空間数: {len(stats.namespaces)}")
+                    if self.namespace in stats.namespaces:
+                        logger.info(f"- 現在の名前空間のベクトル数: {stats.namespaces[self.namespace].vector_count}")
+                else:
+                    # REST APIで統計を取得
+                    api_url = f"https://api.pinecone.io/describe_index_stats/{self.index_name}"
+                    response = self.pinecone_client._make_request(method="GET", url=api_url)
+                    if response and response.status_code == 200:
+                        stats = response.json()
+                        logger.info("インデックス統計 (REST):")
+                        logger.info(f"- 総ベクトル数: {stats.get('total_vector_count', 'N/A')}")
+                        logger.info(f"- 名前空間数: {len(stats.get('namespaces', {}))}")
+                        if self.namespace in stats.get('namespaces', {}):
+                            logger.info(f"- 現在の名前空間のベクトル数: {stats['namespaces'][self.namespace].get('vector_count', 'N/A')}")
+            except Exception as e:
+                logger.error(f"インデックス統計の取得中にエラー: {e}")
+            
+            # リクエストデータの検証
+            for i, vector in enumerate(vectors):
+                logger.info(f"\nベクトル {i+1} の検証:")
+                logger.info(f"- ID: {vector['id']}")
+                logger.info(f"- ベクトル次元数: {len(vector['values'])}")
+                logger.info(f"- メタデータキー: {list(vector['metadata'].keys())}")
+                logger.info(f"- テキスト長: {len(vector['metadata'].get('text', ''))}")
+                
+                # ベクトル値の検証
+                if any(not isinstance(v, (int, float)) for v in vector['values']):
+                    logger.error(f"ベクトル {i+1} に不正な値が含まれています")
+                if any(math.isnan(v) or math.isinf(v) for v in vector['values']):
+                    logger.error(f"ベクトル {i+1} にNaNまたはInf値が含まれています")
+            
             # バッチサイズの設定
             BATCH_SIZE = 100
             total_batches = (len(vectors) + BATCH_SIZE - 1) // BATCH_SIZE
@@ -228,6 +273,12 @@ class PineconeVectorStore:
                 start_idx = batch_idx * BATCH_SIZE
                 end_idx = min((batch_idx + 1) * BATCH_SIZE, len(vectors))
                 current_batch = vectors[start_idx:end_idx]
+                
+                # バッチ情報の出力
+                logger.info(f"\nバッチ {batch_idx+1}/{total_batches} の情報:")
+                logger.info(f"- ベクトル数: {len(current_batch)}")
+                logger.info(f"- 開始インデックス: {start_idx}")
+                logger.info(f"- 終了インデックス: {end_idx}")
                 
                 # リトライロジックの改善
                 max_retries = 5
@@ -252,6 +303,11 @@ class PineconeVectorStore:
                         if self.namespace:  # 名前空間が指定されている場合のみ追加
                             data["namespace"] = self.namespace
                         
+                        # リクエストデータの検証
+                        logger.info(f"リクエストデータサイズ: {len(json.dumps(data))} bytes")
+                        if len(json.dumps(data)) > 1000000:  # 1MB以上の場合は警告
+                            logger.warning("リクエストデータが大きすぎる可能性があります")
+                        
                         # リクエストの送信
                         response = requests.post(
                             f"{self.base_url}/vectors/upsert/{self.index_name}",
@@ -272,6 +328,12 @@ class PineconeVectorStore:
                             delay = base_delay * (2 ** attempt)  # 指数バックオフ
                             logger.warning(f"サーバーエラー (500): {delay}秒後に再試行します...")
                             logger.warning(f"エラーレスポンス: {response.text}")
+                            # エラーの詳細を記録
+                            try:
+                                error_data = response.json()
+                                logger.error(f"エラーの詳細: {json.dumps(error_data, indent=2)}")
+                            except:
+                                logger.error(f"エラーレスポンスの解析に失敗: {response.text}")
                             time.sleep(delay)
                         else:
                             error_msg = f"予期せぬエラー: {response.status_code}"
