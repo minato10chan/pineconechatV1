@@ -13,42 +13,35 @@ from logging.handlers import RotatingFileHandler
 
 # ログ出力の設定
 def setup_logging():
-    # ログディレクトリの作成
-    log_dir = "logs"
-    if not os.path.exists(log_dir):
-        os.makedirs(log_dir)
+    """ロガーの設定"""
+    # 既存のハンドラをクリア
+    root_logger = logging.getLogger()
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
     
-    # ログファイル名の設定（日付を含む）
-    log_file = os.path.join(log_dir, f"app_{datetime.datetime.now().strftime('%Y%m%d')}.log")
-    
-    # ロガーの設定
+    # ロガーの作成
     logger = logging.getLogger('app')
-    logger.setLevel(logging.DEBUG)
+    logger.setLevel(logging.INFO)
     
-    # ファイルハンドラの設定（ローテーション付き）
-    file_handler = RotatingFileHandler(
-        log_file,
-        maxBytes=10*1024*1024,  # 10MB
-        backupCount=5,
-        encoding='utf-8'
-    )
-    file_handler.setLevel(logging.DEBUG)
+    # 既存のハンドラをクリア
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+    
+    # フォーマッターの設定
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    
+    # ファイルハンドラの設定
+    file_handler = logging.FileHandler('app.log', encoding='utf-8')
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
     
     # コンソールハンドラの設定
     console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    
-    # フォーマッタの設定
-    formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
-    file_handler.setFormatter(formatter)
     console_handler.setFormatter(formatter)
-    
-    # ハンドラの追加
-    logger.addHandler(file_handler)
     logger.addHandler(console_handler)
+    
+    # ログの伝播を防止
+    logger.propagate = False
     
     return logger
 
