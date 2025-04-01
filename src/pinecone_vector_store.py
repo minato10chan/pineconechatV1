@@ -28,9 +28,19 @@ class PineconeVectorStore:
         """PineconeベースのベクトルストアをStreamlit上で初期化"""
         try:
             logger.info("Pineconeベクトルストアの初期化を開始します...")
-            logger.info(f"環境変数: PINECONE_API_KEY={'設定済み' if os.environ.get('PINECONE_API_KEY') else '未設定'}")
-            logger.info(f"環境変数: PINECONE_ENVIRONMENT={os.environ.get('PINECONE_ENVIRONMENT')}")
-            logger.info(f"環境変数: PINECONE_INDEX={os.environ.get('PINECONE_INDEX')}")
+            
+            # APIキーとベースURLの設定
+            # Streamlit Cloudのシークレットから読み込む
+            self.api_key = st.secrets.get("PINECONE_API_KEY", os.environ.get('PINECONE_API_KEY'))
+            self.base_url = "https://api.pinecone.io"
+            self.index_name = st.secrets.get("PINECONE_INDEX", os.environ.get('PINECONE_INDEX'))
+            
+            if not self.api_key or not self.index_name:
+                raise ValueError("PINECONE_API_KEY または PINECONE_INDEX が設定されていません")
+            
+            logger.info(f"環境変数: PINECONE_API_KEY={'設定済み' if self.api_key else '未設定'}")
+            logger.info(f"環境変数: PINECONE_ENVIRONMENT={st.secrets.get('PINECONE_ENVIRONMENT', os.environ.get('PINECONE_ENVIRONMENT'))}")
+            logger.info(f"環境変数: PINECONE_INDEX={self.index_name}")
             
             # Pineconeクライアントが既にセッションにあれば再利用
             if 'pinecone_client' in st.session_state and st.session_state.pinecone_client:
