@@ -187,19 +187,33 @@ class PineconeVectorStore:
             # ベクトルIDの生成
             ids = [f"doc_{i}_{uuid.uuid4()}" for i in range(len(texts))]
             
-            # メタデータの準備
+            # メタデータの準備と検証
             if metadatas is None:
                 metadatas = [{} for _ in texts]
             
+            # メタデータの検証と正規化
+            normalized_metadatas = []
+            for metadata in metadatas:
+                normalized = {}
+                for key, value in metadata.items():
+                    # 空の文字列はNoneに変換
+                    if value == "":
+                        value = None
+                    # 文字列の場合は前後の空白を削除
+                    elif isinstance(value, str):
+                        value = value.strip()
+                    normalized[key] = value
+                normalized_metadatas.append(normalized)
+            
             # ベクトルデータの準備
             vectors = []
-            for i, (text, embedding, metadata) in enumerate(zip(texts, embeddings, metadatas)):
+            for i, (text, embedding, metadata) in enumerate(zip(texts, embeddings, normalized_metadatas)):
                 vector = {
                     "id": ids[i],
                     "values": embedding,
                     "metadata": {
                         "text": text,
-                        **metadata
+                        **{k: v for k, v in metadata.items() if v is not None}  # Noneの値は除外
                     }
                 }
                 vectors.append(vector)
@@ -255,6 +269,12 @@ class PineconeVectorStore:
                         elif response.status_code == 500:  # Server error
                             delay = base_delay * (2 ** attempt)
                             logger.warning(f"サーバーエラー (500): {delay}秒後に再試行します...")
+                            # エラーレスポンスの詳細をログに記録
+                            try:
+                                error_detail = response.json()
+                                logger.warning(f"エラー詳細: {error_detail}")
+                            except:
+                                logger.warning(f"エラーレスポンス: {response.text[:200]}")
                             time.sleep(delay)
                         else:
                             error_msg = f"予期せぬエラー: {response.status_code} - {response.text}"
