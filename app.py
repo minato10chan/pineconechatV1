@@ -107,6 +107,37 @@ if 'selected_prompt' not in st.session_state:
 # チャット履歴の初期化
 chat_history = ChatHistory()
 
+# VectorStoreのインスタンスを初期化する関数
+def initialize_vector_store():
+    """ベクトルストアのインスタンスを初期化する"""
+    global vector_store, vector_store_available
+    
+    try:
+        logger.info("ベクトルストアの初期化を開始...")
+        from src.pinecone_vector_store import PineconeVectorStore
+        vector_store = PineconeVectorStore()
+        
+        # 使用可能かどうかを確認
+        vector_store_available = getattr(vector_store, 'available', False)
+        logger.info(f"ベクトルストアの初期化完了: {'利用可能' if vector_store_available else '利用不可'}")
+        
+        if not vector_store_available:
+            logger.warning("ベクトルストアの接続に失敗しました")
+            if hasattr(vector_store, 'pinecone_client'):
+                client = vector_store.pinecone_client
+                logger.warning(f"- 初期化エラー: {getattr(client, 'initialization_error', 'なし')}")
+                logger.warning(f"- 一時的障害: {getattr(client, 'temporary_failure', False)}")
+                logger.warning(f"- 失敗回数: {getattr(client, 'failed_attempts', 0)}")
+        
+        return vector_store_available
+        
+    except Exception as e:
+        logger.error(f"ベクトルストアの初期化中にエラー: {e}")
+        logger.error(traceback.format_exc())
+        vector_store_available = False
+        vector_store = None
+        return False
+
 # VectorStoreのインスタンスを取得する関数
 def get_vector_store():
     """ベクトルストアのインスタンスを取得する"""
