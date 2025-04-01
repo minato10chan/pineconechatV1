@@ -18,7 +18,7 @@ load_dotenv()
 from langchain_openai import OpenAIEmbeddings
 
 # 固定のコレクション名
-PINECONE_NAMESPACE = "ask_the_doc_collection"
+PINECONE_NAMESPACE = ""  # デフォルトの名前空間を使用
 
 # ロガーの設定
 logger = logging.getLogger('app.pinecone_vector_store')
@@ -106,8 +106,9 @@ class PineconeVectorStore:
                 error_msg += "4. 問題が解決しない場合は「緊急オフラインモード」を使用すると、一時的にメモリ内ストレージでアプリを使用できます\n"
                 raise ValueError(error_msg)
             
-            # 名前空間設定
-            self.namespace = PINECONE_NAMESPACE
+            # 名前空間設定（デフォルトの名前空間を使用）
+            self.namespace = ""
+            logger.info(f"名前空間: {self.namespace if self.namespace else 'デフォルト'}")
             self.pinecone_client.namespace = self.namespace
 
             # 埋め込みモデルの設定
@@ -244,11 +245,12 @@ class PineconeVectorStore:
                             "Content-Type": "application/json"
                         }
                         
-                        # リクエストデータの準備
+                        # リクエストデータの準備（名前空間は空文字列の場合は省略）
                         data = {
-                            "vectors": current_batch,
-                            "namespace": self.namespace
+                            "vectors": current_batch
                         }
+                        if self.namespace:  # 名前空間が指定されている場合のみ追加
+                            data["namespace"] = self.namespace
                         
                         # リクエストの送信
                         response = requests.post(
