@@ -260,43 +260,47 @@ class PineconeVectorStore:
                             timeout=30 * (attempt + 1)  # タイムアウトを徐々に増加
                         )
                         
-                        # レスポンスの確認
+                        # レスポンスの検証
                         if response.status_code == 200:
-                            logger.info(f"バッチ {batch_idx+1}/{total_batches} のアップロード成功")
+                            logger.info(f"バッチ {batch_idx+1}/{total_batches} のアップロードに成功")
                             break
-                        elif response.status_code == 429:  # Rate limit
-                            delay = base_delay * (2 ** attempt)  # 指数バックオフ
+                        elif response.status_code == 429:  # Rate Limit
+                            delay = int(response.headers.get('Retry-After', base_delay * (2 ** attempt)))
                             logger.warning(f"レート制限に達しました。{delay}秒後に再試行します...")
                             time.sleep(delay)
-                        elif response.status_code == 500:  # Server error
-                            delay = base_delay * (2 ** attempt)
+                        elif response.status_code == 500:  # Internal Server Error
+                            delay = base_delay * (2 ** attempt)  # 指数バックオフ
                             logger.warning(f"サーバーエラー (500): {delay}秒後に再試行します...")
-                            # エラーレスポンスの詳細をログに記録
-                            try:
-                                error_detail = response.json()
-                                logger.warning(f"エラー詳細: {error_detail}")
-                            except:
-                                logger.warning(f"エラーレスポンス: {response.text[:200]}")
+                            logger.warning(f"エラーレスポンス: {response.text}")
                             time.sleep(delay)
                         else:
-                            error_msg = f"予期せぬエラー: {response.status_code} - {response.text}"
+                            error_msg = f"予期せぬエラー: {response.status_code}"
                             logger.error(error_msg)
-                            last_error = error_msg
+                            logger.error(f"エラーレスポンス: {response.text}")
+                            raise Exception(error_msg)
                             
+                    except requests.exceptions.Timeout:
+                        delay = base_delay * (2 ** attempt)
+                        logger.warning(f"タイムアウト: {delay}秒後に再試行します...")
+                        time.sleep(delay)
                     except requests.exceptions.RequestException as e:
                         delay = base_delay * (2 ** attempt)
-                        logger.warning(f"リクエストエラー: {str(e)}。{delay}秒後に再試行します...")
+                        logger.warning(f"リクエストエラー: {delay}秒後に再試行します...")
+                        logger.warning(f"エラー: {str(e)}")
                         time.sleep(delay)
-                        last_error = str(e)
-                
-                # すべての試行が失敗した場合
-                if attempt == max_retries - 1:
-                    error_msg = f"バッチ {batch_idx+1}/{total_batches} のアップロードに失敗しました。"
-                    error_msg += f"\n最後のエラー: {last_error}"
-                    logger.error(error_msg)
-                    raise ValueError(error_msg)
+                    except Exception as e:
+                        logger.error(f"予期せぬエラー: {str(e)}")
+                        logger.error(traceback.format_exc())
+                        raise
+                    
+                    # 最後の試行で失敗した場合
+                    if attempt == max_retries - 1:
+                        error_msg = f"バッチ {batch_idx+1}/{total_batches} のアップロードに失敗しました"
+                        logger.error(error_msg)
+                        if last_error:
+                            logger.error(f"最後のエラー: {str(last_error)}")
+                        raise Exception(error_msg)
             
-            logger.info("すべてのバッチのアップロードが完了しました")
             return True
             
         except Exception as e:
