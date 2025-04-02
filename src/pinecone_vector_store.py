@@ -182,20 +182,37 @@ class PineconeVectorStore:
         ドキュメントをPineconeにアップロードする
         """
         try:
+            # テキストのチャンク分割
+            CHUNK_SIZE = 500  # 文字数制限
+            chunked_texts = []
+            chunked_metadatas = []
+            
+            for i, text in enumerate(texts):
+                # テキストをチャンクに分割
+                chunks = [text[j:j+CHUNK_SIZE] for j in range(0, len(text), CHUNK_SIZE)]
+                chunked_texts.extend(chunks)
+                
+                # メタデータの複製
+                if metadatas and i < len(metadatas):
+                    metadata = metadatas[i]
+                    chunked_metadatas.extend([metadata.copy() for _ in chunks])
+                else:
+                    chunked_metadatas.extend([{} for _ in chunks])
+            
             # 埋め込みベクトルの生成
-            logger.info(f"{len(texts)}件のドキュメントの埋め込みベクトルを生成中...")
-            embeddings = self.embeddings.embed_documents(texts)
+            logger.info(f"{len(chunked_texts)}件のドキュメントチャンクの埋め込みベクトルを生成中...")
+            embeddings = self.embeddings.embed_documents(chunked_texts)
             
             # ベクトルIDの生成
-            ids = [f"doc_{i}_{uuid.uuid4()}" for i in range(len(texts))]
+            ids = [f"doc_{i}_{uuid.uuid4()}" for i in range(len(chunked_texts))]
             
             # メタデータの準備と検証
-            if metadatas is None:
-                metadatas = [{} for _ in texts]
+            if chunked_metadatas is None:
+                chunked_metadatas = [{} for _ in chunked_texts]
             
             # メタデータの検証と正規化
             normalized_metadatas = []
-            for metadata in metadatas:
+            for metadata in chunked_metadatas:
                 normalized = {}
                 for key, value in metadata.items():
                     # 空の文字列はNoneに変換
@@ -209,13 +226,15 @@ class PineconeVectorStore:
             
             # ベクトルデータの準備
             vectors = []
-            for i, (text, embedding, metadata) in enumerate(zip(texts, embeddings, normalized_metadatas)):
+            for i, (text, embedding, metadata) in enumerate(zip(chunked_texts, embeddings, normalized_metadatas)):
                 vector = {
                     "id": ids[i],
                     "values": embedding,
                     "metadata": {
                         "text": text,
-                        **{k: v for k, v in metadata.items() if v is not None}  # Noneの値は除外
+                        "chunk_index": i,
+                        "total_chunks": len(chunked_texts),
+                        **{k: v for k, v in metadata.items() if v is not None}
                     }
                 }
                 vectors.append(vector)
@@ -265,8 +284,13 @@ class PineconeVectorStore:
                     logger.error(f"ベクトル {i+1} にNaNまたはInf値が含まれています")
             
             # バッチサイズの設定
-            BATCH_SIZE = 100
+            BATCH_SIZE = 50  # バッチサイズを小さくする
             total_batches = (len(vectors) + BATCH_SIZE - 1) // BATCH_SIZE
+            
+            # 一時的なストレージに保存
+            self.offline_storage["vectors"].extend(vectors)
+            self.offline_storage["metadata"].extend([v["metadata"] for v in vectors])
+            self.offline_storage["ids"].extend([v["id"] for v in vectors])
             
             # バッチ処理
             for batch_idx in range(total_batches):
@@ -335,6 +359,12 @@ class PineconeVectorStore:
                             except:
                                 logger.error(f"エラーレスポンスの解析に失敗: {response.text}")
                             time.sleep(delay)
+                            
+                            # 500エラーが3回連続で発生した場合、一時的なストレージモードに切り替え
+                            if attempt >= 2:
+                                logger.warning("500エラーが3回連続で発生したため、一時的なストレージモードに切り替えます")
+                                self.temporary_failure = True
+                                return True  # 一時的なストレージに保存済みなので成功とみなす
                         else:
                             error_msg = f"予期せぬエラー: {response.status_code}"
                             logger.error(error_msg)
